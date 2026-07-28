@@ -62,6 +62,7 @@
 #include "Cafe/OS/libs/swkbd/swkbd.h"
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h" // For renderer API checks
+#include "Cemu/finlinkStream/WiiuGamepadStream.h"
 
 extern WindowSystem::WindowInfo g_window_info;
 extern std::shared_mutex g_mutex;
@@ -614,6 +615,10 @@ bool MainWindow::FileLoad(const fs::path launchPath, wxLaunchGameEvent::INITIATE
 
 	CreateCanvas();
 	CafeSystem::LaunchForegroundTitle();
+
+	if (GetConfig().finlink_enabled.GetValue())
+		Cemu::FinlinkStream::g_wiiuGamepadStream = std::make_unique<Cemu::FinlinkStream::WiiuGamepadStream>(GetConfig().finlink_port.GetValue());
+
 	RecreateMenu();
 	UpdateChildWindowTitleRunningState();
 
@@ -1759,6 +1764,7 @@ void MainWindow::SetFullScreen(bool state)
 
 void MainWindow::EndEmulation() // unfinished - memory leaks and crashes after repeated use (after 3x usually)
 {
+	Cemu::FinlinkStream::g_wiiuGamepadStream.reset();
 	CafeSystem::ShutdownTitle();
 	DestroyCanvas();
 	m_game_launched = false;

@@ -7,6 +7,9 @@
 #include "input/InputManager.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/CafeSystem.h"
+#include "Cemu/finlinkStream/WiiuGamepadStream.h"
+
+#include <algorithm>
 
 enum ControllerVPADMapping2 : uint32
 {
@@ -191,6 +194,39 @@ void VPADController::update_touch(VPADStatus_t& status)
 	// NGDK (Neko Game Development Kit 2) games (e.g. Mysterios Cities of Gold) rely on x/y remaining intact after touch is released
 	status.tpData.x = (uint16)m_last_touch_position.x;
 	status.tpData.y = (uint16)m_last_touch_position.y;
+
+	// A remote finlink client streaming the GamePad screen (see
+	// Cemu/finlinkStream/WiiuGamepadStream.h) wholesale overrides touch
+	// only -- buttons/sticks (handled elsewhere in VPADRead()) always stay
+	// local. Deliberately a short-circuit here rather than routing through
+	// InputManager's mouse-emulation path below: that path's coordinates
+	// are relative to the *local* GamePad View window's on-screen pixel
+	// rectangle (LatteRenderTarget_getScreenImageArea), which has no
+	// meaning for a remote client that may have no local window open at
+	// all. The remote touch is already normalized to the DRC's own
+	// 854x480 pixel space (finlink's docs/protocol.md, same n3ds_touch
+	// convention the other secondary-screen stream types use), so it only
+	// needs the same raw-digitizer-range formula the code below already
+	// applies to a relative position.
+	if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+	{
+		if (auto touch = Cemu::FinlinkStream::g_wiiuGamepadStream->GetTouchOverride())
+		{
+			if (touch->pressed)
+			{
+				const float relX = std::clamp(touch->x / 854.0f, 0.0f, 1.0f);
+				const float relY = std::clamp(touch->y / 480.0f, 0.0f, 1.0f);
+
+				status.tpData.touch = kTpTouchOn;
+				status.tpData.validity = kTpValid;
+				status.tpData.x = (uint16)((relX * 3883.0f) + 92.0f);
+				status.tpData.y = (uint16)(4095.0f - (relY * 3694.0f) - 254.0f);
+
+				m_last_touch_position = glm::ivec2{status.tpData.x, status.tpData.y};
+			}
+			return;
+		}
+	}
 
 	auto& instance = InputManager::instance();
 	bool pad_view;

@@ -204,6 +204,7 @@ public:
 	bool IsPadWindowActive() override;
 
 	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
+	bool CaptureStreamFrame(LatteTextureView* texView, std::vector<uint8>& outRgba, int& outWidth, int& outHeight) override;
 
 	void QueryMemoryInfo();
 	void QueryAvailableFormats();

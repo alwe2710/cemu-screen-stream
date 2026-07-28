@@ -273,6 +273,8 @@ XMLConfigParser CemuConfig::Load(XMLConfigParser& parser)
 	crash_dump = debug.get("CrashDumpUnix", crash_dump);
 #endif
 	gdb_port = debug.get("GDBPort", 1337);
+	finlink_enabled = debug.get("FinlinkEnabled", false);
+	finlink_port = debug.get("FinlinkPort", 6840);
 #ifdef ENABLE_METAL
 	gpu_capture_dir = debug.get("GPUCaptureDir", "");
 	framebuffer_fetch = debug.get("FramebufferFetch", true);
@@ -437,6 +439,8 @@ XMLConfigParser CemuConfig::Save(XMLConfigParser& parser)
 	debug.set("CrashDumpUnix", crash_dump.GetValue());
 #endif
 	debug.set("GDBPort", gdb_port);
+	debug.set("FinlinkEnabled", finlink_enabled);
+	debug.set("FinlinkPort", finlink_port);
 #ifdef ENABLE_METAL
 	debug.set("GPUCaptureDir", gpu_capture_dir);
 	debug.set("FramebufferFetch", framebuffer_fetch);

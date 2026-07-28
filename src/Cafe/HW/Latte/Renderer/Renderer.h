@@ -73,6 +73,18 @@ public:
 
 	virtual void HandleScreenshotRequest(LatteTextureView* texView, bool padView){}
 
+	// Continuous, backend-specific readback for the finlink WIIU_GAMEPAD
+	// stream (Cemu/finlinkStream/WiiuGamepadStream.cpp) -- unlike
+	// HandleScreenshotRequest above (one-shot, user-triggered, saves a PNG),
+	// this is polled every DRC frame while a remote client is attached, and
+	// must return quickly-ish since callers keep the render thread until it
+	// returns. Base implementation is a no-op returning false: only
+	// VulkanRenderer overrides this for now (see that class's own comment on
+	// why OpenGL/Metal are out of scope for the first version). `outRgba`
+	// is resized to width*height*4 (tightly packed, R,G,B,A per pixel) on
+	// success.
+	virtual bool CaptureStreamFrame(LatteTextureView* texView, std::vector<uint8>& outRgba, int& outWidth, int& outHeight) { return false; }
+
 	virtual void DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter,
 												sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
 												bool padView, bool clearBackground) = 0;

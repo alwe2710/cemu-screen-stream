@@ -101,6 +101,8 @@ private:
 	// Debug
 	wxChoice* m_crash_dump;
 	wxSpinCtrl* m_gdb_port;
+	wxCheckBox* m_finlink_enabled;
+	wxSpinCtrl* m_finlink_port;
 #ifdef ENABLE_METAL
 	wxTextCtrl* m_gpu_capture_dir;
 	wxCheckBox* m_framebuffer_fetch;

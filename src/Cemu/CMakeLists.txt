@@ -3,6 +3,11 @@ add_library(CemuComponents
   ExpressionParser/ExpressionParser.h
   FileCache/FileCache.cpp
   FileCache/FileCache.h
+  finlinkStream/FinlinkMessages.cpp
+  finlinkStream/FinlinkMessages.h
+  finlinkStream/FinlinkWebSocket.h
+  finlinkStream/WiiuGamepadStream.cpp
+  finlinkStream/WiiuGamepadStream.h
   Logging/CemuDebugLogging.h
   Logging/CemuLogging.cpp
   Logging/CemuLogging.h
@@ -48,6 +53,8 @@ target_include_directories(CemuComponents PUBLIC "../")
 target_link_libraries(CemuComponents PRIVATE
 	CemuCommon
   CemuGui
+  finlink_core
+  OpenSSL::Crypto
 )
 
 # PUBLIC because fmt/format.h is included in ExpressionParser/ExpressionParser.h

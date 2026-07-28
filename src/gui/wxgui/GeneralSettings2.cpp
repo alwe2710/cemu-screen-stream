@@ -1042,6 +1042,23 @@ wxPanel* GeneralSettings2::AddDebugPage(wxNotebook* notebook)
 		debug_panel_sizer->Add(debug_row, 0, wxALL | wxEXPAND, 5);
 	}
 
+	{
+		auto* finlink_row = new wxFlexGridSizer(0, 2, 0, 0);
+		finlink_row->SetFlexibleDirection(wxBOTH);
+		finlink_row->SetNonFlexibleGrowMode(wxFLEX_GROWMODE_SPECIFIED);
+
+		m_finlink_enabled = new wxCheckBox(panel, wxID_ANY, _("Enable GamePad streaming (finlink)"));
+		m_finlink_enabled->SetToolTip(_("Streams the emulated GamePad screen to a remote finlink client over the network and accepts touch input back. Forces a Vulkan renderer while active."));
+		finlink_row->Add(m_finlink_enabled, 0, wxALL | wxEXPAND, 5);
+		finlink_row->AddSpacer(0);
+
+		finlink_row->Add(new wxStaticText(panel, wxID_ANY, _("finlink port")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+		m_finlink_port = new wxSpinCtrl(panel, wxID_ANY, "6840", wxDefaultPosition, wxDefaultSize, 0, 1000, 65535);
+		finlink_row->Add(m_finlink_port, 0, wxALL | wxEXPAND, 5);
+
+		debug_panel_sizer->Add(finlink_row, 0, wxALL | wxEXPAND, 5);
+	}
+
 #ifdef ENABLE_METAL
 	{
 		auto* debug_row = new wxFlexGridSizer(0, 2, 0, 0);
@@ -1297,6 +1314,8 @@ void GeneralSettings2::StoreConfig()
 	// debug
 	config.crash_dump = (CrashDump)m_crash_dump->GetSelection();
 	config.gdb_port = m_gdb_port->GetValue();
+	config.finlink_enabled = m_finlink_enabled->IsChecked();
+	config.finlink_port = m_finlink_port->GetValue();
 #ifdef ENABLE_METAL
 	config.gpu_capture_dir = m_gpu_capture_dir->GetValue().utf8_string();
 	config.framebuffer_fetch = m_framebuffer_fetch->IsChecked();
@@ -2057,6 +2076,8 @@ void GeneralSettings2::ApplyConfig()
 	// debug
 	m_crash_dump->SetSelection((int)config.crash_dump.GetValue());
 	m_gdb_port->SetValue(config.gdb_port.GetValue());
+	m_finlink_enabled->SetValue(config.finlink_enabled.GetValue());
+	m_finlink_port->SetValue(config.finlink_port.GetValue());
 #ifdef ENABLE_METAL
 	m_gpu_capture_dir->SetValue(wxString::FromUTF8(config.gpu_capture_dir.GetValue()));
 	m_framebuffer_fetch->SetValue(config.framebuffer_fetch);

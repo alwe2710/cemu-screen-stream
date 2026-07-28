@@ -1271,6 +1271,103 @@ void VulkanRenderer::HandleScreenshotRequest(LatteTextureView* texView, bool pad
 		SaveScreenshot(rgb_data, width, height, !padView);
 }
 
+bool VulkanRenderer::CaptureStreamFrame(LatteTextureView* texView, std::vector<uint8>& outRgba, int& outWidth, int& outHeight)
+{
+	// Simplified sibling of HandleScreenshotRequest() above, for
+	// WiiuGamepadStream.cpp's per-frame polling instead of a one-shot,
+	// user-triggered PNG save. Two deliberate differences from that
+	// function, both documented limitations rather than oversights:
+	//  - No blit-based format conversion path: only the common
+	//    R8G8B8A8_UNORM/_SRGB DRC format is supported. A game whose DRC
+	//    scan buffer ends up in some other host format (rare -- games don't
+	//    choose this, Cemu's own texture cache does) just won't stream;
+	//    logged once, not treated as fatal.
+	//  - Still does a synchronous SubmitCommandBuffer()+
+	//    WaitCommandBufferFinished() (i.e. a render-thread stall) same as
+	//    the screenshot path -- there's no non-stalling readback primitive
+	//    already in this codebase to build on within this feature's current
+	//    scope. WiiuGamepadStream throttles how often it calls this (see
+	//    its own comment) specifically to bound this cost; a truly
+	//    async/fenced readback pipeline would be a real follow-up, not a
+	//    quick fix.
+	auto texViewVk = (LatteTextureViewVk*)texView;
+	auto baseImageTex = texViewVk->GetBaseImage();
+	auto textureVk = baseImageTex->GetImageObj();
+	textureVk->flagForCurrentCommandBuffer();
+
+	int width, height;
+	baseImageTex->GetEffectiveSize(width, height, 0);
+
+	if (texViewVk->firstMip != 0)
+		return false;
+
+	auto format = baseImageTex->GetFormat();
+	if (format != VK_FORMAT_R8G8B8A8_UNORM && format != VK_FORMAT_R8G8B8A8_SRGB)
+	{
+		static bool warnedOnce = false;
+		if (!warnedOnce)
+		{
+			cemuLog_log(LogType::Force, "WIIU_GAMEPAD stream: DRC surface format isn't R8G8B8A8, streaming unsupported for this game");
+			warnedOnce = true;
+		}
+		return false;
+	}
+
+	const uint32 size = 4 * width * height;
+
+	VkBuffer buffer = nullptr;
+	VkDeviceMemory bufferMemory = nullptr;
+	memoryManager->CreateBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, buffer, bufferMemory);
+	void* bufferPtr = nullptr;
+	vkMapMemory(m_logicalDevice, bufferMemory, 0, VK_WHOLE_SIZE, 0, &bufferPtr);
+
+	VkBufferImageCopy region{};
+	region.bufferOffset = 0;
+	region.bufferRowLength = width;
+	region.bufferImageHeight = height;
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.baseArrayLayer = texViewVk->firstSlice;
+	region.imageSubresource.layerCount = 1;
+	region.imageSubresource.mipLevel = 0;
+	region.imageOffset = {0, 0, 0};
+	region.imageExtent = {(uint32)width, (uint32)height, 1};
+
+	barrier_image<IMAGE_WRITE | TRANSFER_WRITE, TRANSFER_READ>(baseImageTex, region.imageSubresource, VK_IMAGE_LAYOUT_GENERAL);
+	vkCmdCopyImageToBuffer(getCurrentCommandBuffer(), textureVk->m_image, VK_IMAGE_LAYOUT_GENERAL, buffer, 1, &region);
+	barrier_image<TRANSFER_READ, TRANSFER_WRITE | IMAGE_WRITE>(baseImageTex, region.imageSubresource, baseImageTex->GetDefaultLayout());
+
+	SubmitCommandBuffer();
+	WaitCommandBufferFinished(GetCurrentCommandBufferId());
+
+	outRgba.resize(size);
+	if (format == VK_FORMAT_R8G8B8A8_SRGB)
+	{
+		// Same per-channel sRGB->linear conversion HandleScreenshotRequest()
+		// uses above -- our caller only needs the RGB bytes to be visually
+		// correct, not alpha, so alpha is copied through unconverted.
+		auto src = (const uint8*)bufferPtr;
+		for (uint32 i = 0; i < size; i += 4)
+		{
+			outRgba[i + 0] = SRGBComponentToRGB(src[i + 0]);
+			outRgba[i + 1] = SRGBComponentToRGB(src[i + 1]);
+			outRgba[i + 2] = SRGBComponentToRGB(src[i + 2]);
+			outRgba[i + 3] = src[i + 3];
+		}
+	}
+	else
+	{
+		std::memcpy(outRgba.data(), bufferPtr, size);
+	}
+
+	vkUnmapMemory(m_logicalDevice, bufferMemory);
+	vkFreeMemory(m_logicalDevice, bufferMemory, nullptr);
+	vkDestroyBuffer(m_logicalDevice, buffer, nullptr);
+
+	outWidth = width;
+	outHeight = height;
+	return true;
+}
+
 static const float kQueuePriority = 1.0f;
 
 std::vector<VkDeviceQueueCreateInfo> VulkanRenderer::CreateQueueCreateInfos(const std::set<sint32>& uniqueQueueFamilies) const

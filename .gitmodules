@@ -25,3 +25,7 @@
 [submodule "dependencies/xbyak_aarch64"]
 	path = dependencies/xbyak_aarch64
 	url = https://github.com/fujitsu/xbyak_aarch64
+[submodule "dependencies/finlink"]
+	path = dependencies/finlink
+	url = https://github.com/alwe2710/finlink.git
+	branch = main

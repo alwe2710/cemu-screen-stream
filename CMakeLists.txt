@@ -268,4 +268,11 @@ if (NOT ZArchive_FOUND)
 	add_subdirectory("dependencies/ZArchive" EXCLUDE_FROM_ALL)
 endif()
 
+# finlink_core -- portable C99 library behind the finlink WebSocket streaming
+# protocol, used by src/Cemu/finlinkStream/ (WIIU_GAMEPAD stream). Same
+# dependency already vendored the same way in the sibling azahar and
+# dolphin-gba-stream forks.
+set(FINLINK_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory("dependencies/finlink/core" EXCLUDE_FROM_ALL)
+
 add_subdirectory(src)
