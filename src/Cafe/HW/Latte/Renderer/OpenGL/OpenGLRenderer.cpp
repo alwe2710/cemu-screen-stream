@@ -580,6 +580,113 @@ void OpenGLRenderer::HandleScreenshotRequest(LatteTextureView* texView, bool pad
 	SaveScreenshot(rgb_data, screenshotWidth, screenshotHeight, !padView);
 }
 
+bool OpenGLRenderer::CaptureStreamFrame(LatteTextureView* texView, std::vector<uint8>& outRgba, int& outWidth, int& outHeight)
+{
+	// Simplified sibling of HandleScreenshotRequest() above, for
+	// WiiuGamepadStream.cpp's per-frame polling instead of a one-shot,
+	// user-triggered PNG save -- same relationship VulkanRenderer's own
+	// CaptureStreamFrame() has to its HandleScreenshotRequest(). RGBA8
+	// (four bytes per pixel), not RGB: outRgba's consumer
+	// (WiiuGamepadStream::ConvertRgba8ToRgb565) indexes four bytes per
+	// pixel same as the Vulkan path's own R8G8B8A8 output, so this keeps
+	// both backends producing the same layout for that shared code.
+	//
+	// R8G8B8A8 and R10G10B10A2 are the two real DRC scan-buffer formats seen
+	// in practice (LatteTextureGL.cpp's own format table; R10G10B10A2 e.g.
+	// The Legend of Zelda: The Wind Waker HD's GamePad output) -- any other
+	// format (rare for a DRC target) is rejected rather than guessed at,
+	// matching VulkanRenderer::CaptureStreamFrame()'s own R8G8B8A8-only
+	// policy.
+	const bool isRgba8 = texView->format == Latte::E_GX2SURFFMT::R8_G8_B8_A8_UNORM ||
+	                      texView->format == Latte::E_GX2SURFFMT::R8_G8_B8_A8_SRGB;
+	const bool isRgb10A2 = texView->format == Latte::E_GX2SURFFMT::R10_G10_B10_A2_UNORM ||
+	                        texView->format == Latte::E_GX2SURFFMT::R10_G10_B10_A2_SRGB;
+	if (!isRgba8 && !isRgb10A2)
+	{
+		static bool warnedOnce = false;
+		if (!warnedOnce)
+		{
+			cemuLog_log(LogType::Force, "WIIU_GAMEPAD stream: DRC surface format isn't R8G8B8A8 or R10G10B10A2, streaming unsupported for this game");
+			warnedOnce = true;
+		}
+		return false;
+	}
+
+	// LatteTC_GetTextureSliceViewOrTryCreate() (this function's caller, in
+	// LatteRenderTarget.cpp) only creates/returns the texture *view* -- it
+	// doesn't itself sync the GL texture's data with Cemu's current
+	// render-target tracking. DrawBackbufferQuad() triggers that sync
+	// implicitly as part of normal draw-time texture binding (which is why
+	// the local GamePad View window shows correct content), but a capture
+	// that reads the texture without ever drawing with it needs to request
+	// it explicitly, same as LatteAsyncCommands.cpp's own
+	// ASYNC_CMD_FORCE_TEXTURE_READBACK handler (the only other place in
+	// this codebase reading a just-rendered texture back to the CPU) does.
+	LatteTexture_UpdateDataToLatest(texView->baseTexture);
+
+	auto texViewGL = (LatteTextureViewGL*)texView;
+
+	int width, height;
+	glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+	texture_bindAndActivate(texView, 0);
+	glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &width);
+	glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &height);
+	texture_bindAndActivate(nullptr, 0);
+
+	const sint32 pixelCount = width * height;
+	outRgba.resize((size_t)pixelCount * 4);
+
+	// FBO + glReadPixels rather than glGetTexImage: besides being the more
+	// commonly exercised driver code path for "read back a render target",
+	// it also handles the RGB10_A2->RGBA8 conversion automatically instead
+	// of needing manual bit-unpacking of a packed readback.
+	GLint prevReadFbo = 0;
+	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevReadFbo);
+
+	GLuint tempFbo = 0;
+	glGenFramebuffers(1, &tempFbo);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, tempFbo);
+	glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texViewGL->glTexId, 0);
+
+	if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+	{
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+		glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, outRgba.data());
+	}
+	else
+	{
+		static bool warnedFboOnce = false;
+		if (!warnedFboOnce)
+		{
+			cemuLog_log(LogType::Force, "WIIU_GAMEPAD stream: capture FBO incomplete, streaming unsupported for this game");
+			warnedFboOnce = true;
+		}
+	}
+
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevReadFbo);
+	glDeleteFramebuffers(1, &tempFbo);
+
+	// Same per-channel sRGB->linear conversion HandleScreenshotRequest()
+	// does, simplified like VulkanRenderer::CaptureStreamFrame()'s own copy
+	// of that logic: only the source format is checked here (no comparison
+	// against LatteGPUState.drcBufferUsesSRGB), since our caller only wants
+	// visually-correct RGB bytes, not a bit-exact match to the local
+	// window's own output.
+	if (HAS_FLAG(texView->format, Latte::E_GX2SURFFMT::FMT_BIT_SRGB))
+	{
+		for (sint32 i = 0; i < pixelCount; i++)
+		{
+			outRgba[i * 4 + 0] = SRGBComponentToRGB(outRgba[i * 4 + 0]);
+			outRgba[i * 4 + 1] = SRGBComponentToRGB(outRgba[i * 4 + 1]);
+			outRgba[i * 4 + 2] = SRGBComponentToRGB(outRgba[i * 4 + 2]);
+		}
+	}
+
+	outWidth = width;
+	outHeight = height;
+	return true;
+}
+
 void OpenGLRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter, sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight, bool padView, bool clearBackground)
 {
 	if (padView && !IsPadWindowActive())
