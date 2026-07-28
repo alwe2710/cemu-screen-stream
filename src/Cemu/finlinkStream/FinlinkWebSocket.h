@@ -28,6 +28,9 @@
 #include <chrono>
 #include <cstring>
 #include <map>
+#if BOOST_OS_UNIX
+#include <netinet/tcp.h> // TCP_NODELAY -- Windows gets it from Common/socket.h's <ws2tcpip.h> instead.
+#endif
 #include <optional>
 #include <sstream>
 #include <string>
@@ -164,7 +167,7 @@ inline bool SendAllBytes(SOCKET fd, const void* data, size_t size, const std::at
 // Computes and sends the 101 Switching Protocols response. `request` must
 // satisfy IsWebSocketUpgradeRequest(). SHA1 via OpenSSL (already a
 // dependency here, see gui/wxgui/ChecksumTool.cpp for the same
-// EVP_Digest-based pattern), base64 via Cemu's own ncrypto::base64Encode().
+// EVP_Digest-based pattern), base64 via Cemu's own NCrypto::base64Encode().
 inline bool SendWebSocketUpgradeResponse(SOCKET fd, const HttpRequest& request, const std::atomic_bool& stop)
 {
 	const std::string concatenated = request.headers.at("sec-websocket-key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -173,7 +176,7 @@ inline bool SendWebSocketUpgradeResponse(SOCKET fd, const HttpRequest& request, 
 	unsigned int digestLen = 0;
 	EVP_Digest(concatenated.data(), concatenated.size(), digest, &digestLen, EVP_sha1(), nullptr);
 
-	const std::string acceptB64 = ncrypto::base64Encode(digest, digestLen);
+	const std::string acceptB64 = NCrypto::base64Encode(digest, digestLen);
 
 	std::ostringstream response;
 	response << "HTTP/1.1 101 Switching Protocols\r\n"
