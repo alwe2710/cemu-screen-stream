@@ -52,6 +52,8 @@ class LatteTextureView;
 namespace Cemu::FinlinkStream
 {
 
+class Beacon;
+
 struct TouchOverride
 {
 	bool pressed;
@@ -81,6 +83,7 @@ private:
 	SOCKET m_listenSocket;
 	std::thread m_acceptThread;
 	std::atomic_bool m_stop{false};
+	std::unique_ptr<Beacon> m_beacon;
 
 	// Claimed by the one session currently allowed to stream (this stream
 	// type has exactly one slot, see FinlinkMessages.cpp).

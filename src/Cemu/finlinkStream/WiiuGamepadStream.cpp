@@ -7,6 +7,7 @@
 
 #include "finlink/deflate.h"
 #include "finlink/protocol.h"
+#include "Beacon.h"
 #include "FinlinkMessages.h"
 #include "FinlinkWebSocket.h"
 
@@ -100,11 +101,14 @@ WiiuGamepadStream::WiiuGamepadStream(uint16_t port) : m_port(port)
 	}
 
 	m_acceptThread = std::thread(&WiiuGamepadStream::AcceptLoop, this);
+
+	m_beacon = std::make_unique<Beacon>(m_port);
 }
 
 WiiuGamepadStream::~WiiuGamepadStream()
 {
 	m_stop = true;
+	m_beacon.reset();
 	if (m_listenSocket != INVALID_SOCKET)
 		closesocket(m_listenSocket);
 	if (m_acceptThread.joinable())

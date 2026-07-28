@@ -3,6 +3,8 @@ add_library(CemuComponents
   ExpressionParser/ExpressionParser.h
   FileCache/FileCache.cpp
   FileCache/FileCache.h
+  finlinkStream/Beacon.cpp
+  finlinkStream/Beacon.h
   finlinkStream/FinlinkMessages.cpp
   finlinkStream/FinlinkMessages.h
   finlinkStream/FinlinkWebSocket.h
