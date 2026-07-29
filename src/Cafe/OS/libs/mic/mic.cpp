@@ -144,18 +144,28 @@ void micExport_MICInit(PPCInterpreter_t* hCPU)
 	osLib_returnFromFunction(hCPU, (drcIndex==0)?MIC_HANDLE_DRC0:MIC_HANDLE_DRC1); // success
 
 	auto& config = GetConfig();
-	const auto audio_api = IAudioInputAPI::Cubeb; // change this if more input apis get implemented
 
 	std::unique_lock lock(g_audioInputMutex);
 	if (!g_inputAudio)
 	{
+		// Search every available input API for a device matching the
+		// configured identifier (rather than assuming Cubeb) -- lets
+		// config.input_device also resolve to the Finlink Remote Microphone
+		// device (see FinlinkInputAPI.h), not just a real Cubeb device.
+		IAudioInputAPI::AudioInputAPI audio_api = IAudioInputAPI::Cubeb;
 		IAudioInputAPI::DeviceDescriptionPtr device_description;
-		if (IAudioInputAPI::IsAudioInputAPIAvailable(audio_api))
+		for (uint32 api = 0; api < IAudioInputAPI::AudioInputAPIEnd; api++)
 		{
-			auto devices = IAudioInputAPI::GetDevices(audio_api);
+			if (!IAudioInputAPI::IsAudioInputAPIAvailable((IAudioInputAPI::AudioInputAPI)api))
+				continue;
+			auto devices = IAudioInputAPI::GetDevices((IAudioInputAPI::AudioInputAPI)api);
 			const auto it = std::find_if(devices.begin(), devices.end(), [&config](const auto& d) {return d->GetIdentifier() == config.input_device; });
 			if (it != devices.end())
+			{
+				audio_api = (IAudioInputAPI::AudioInputAPI)api;
 				device_description = *it;
+				break;
+			}
 		}
 
 		if (device_description)

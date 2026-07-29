@@ -84,9 +84,11 @@ private:
 class wxInputDeviceDescription : public wxClientData
 {
 public:
-	wxInputDeviceDescription(const IAudioInputAPI::DeviceDescriptionPtr& description) : m_description(description) {}
+	wxInputDeviceDescription(IAudioInputAPI::AudioInputAPI api, const IAudioInputAPI::DeviceDescriptionPtr& description) : m_api(api), m_description(description) {}
+	IAudioInputAPI::AudioInputAPI GetApi() const { return m_api; }
 	const IAudioInputAPI::DeviceDescriptionPtr& GetDescription() const { return m_description; }
 private:
+	IAudioInputAPI::AudioInputAPI m_api;
 	IAudioInputAPI::DeviceDescriptionPtr m_description;
 };
 
@@ -1482,7 +1484,18 @@ void GeneralSettings2::UpdateAudioDeviceList()
 
 	for (auto& device : input_devices)
 	{
-		m_input_device->Append(device->GetName(), new wxInputDeviceDescription(device));
+		m_input_device->Append(device->GetName(), new wxInputDeviceDescription(input_audio_api, device));
+	}
+
+	// Finlink Remote Microphone -- always listed alongside whatever real
+	// Cubeb devices exist above, exactly like Azahar's own
+	// "Finlink Remote Microphone" AudioCore::Input entry: one more
+	// selectable device, not a separate API picker (there isn't one in this
+	// UI, see input_audio_api's own comment above).
+	if (IAudioInputAPI::IsAudioInputAPIAvailable(IAudioInputAPI::Finlink))
+	{
+		for (auto& device : IAudioInputAPI::GetDevices(IAudioInputAPI::Finlink))
+			m_input_device->Append(device->GetName(), new wxInputDeviceDescription(IAudioInputAPI::Finlink, device));
 	}
 
 	if(m_tv_device->GetCount() > 1)
@@ -2228,7 +2241,7 @@ void GeneralSettings2::UpdateAudioDevice()
 
 				try
 				{
-					g_inputAudio = IAudioInputAPI::CreateDevice(IAudioInputAPI::AudioInputAPI::Cubeb, description->GetDescription(), 32000, channels, snd_core::AX_SAMPLES_PER_3MS_32KHZ, 16);
+					g_inputAudio = IAudioInputAPI::CreateDevice(description->GetApi(), description->GetDescription(), 32000, channels, snd_core::AX_SAMPLES_PER_3MS_32KHZ, 16);
 					g_inputAudio->SetVolume(m_input_volume->GetValue());
 				}
 				catch (std::runtime_error& ex)

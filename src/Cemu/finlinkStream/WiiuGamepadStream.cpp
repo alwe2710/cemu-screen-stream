@@ -208,6 +208,21 @@ bool WiiuGamepadStream::SubmitGamepadAudio(const int16_t* samples, size_t sample
 	return true; // Took ownership -- caller must not also play these locally.
 }
 
+void WiiuGamepadStream::SetMicWanted(bool wanted, uint32_t sampleRate)
+{
+	std::lock_guard lock(m_micMutex);
+	m_micWanted = wanted;
+	m_micWantedSampleRate = sampleRate;
+}
+
+std::vector<uint8_t> WiiuGamepadStream::PollMicAudio()
+{
+	std::lock_guard lock(m_micMutex);
+	std::vector<uint8_t> result = std::move(m_pendingMicAudio);
+	m_pendingMicAudio.clear();
+	return result;
+}
+
 void WiiuGamepadStream::AcceptLoop()
 {
 	if (m_listenSocket == INVALID_SOCKET)
@@ -294,6 +309,13 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 	m_streaming = true;
 	m_inputActive = true;
 	uint64_t lastSentFrameId = 0;
+	// Edge-detection for the mic-enable signal -- session-local (not a
+	// member), same reasoning as lastSentFrameId above. Starts at "not
+	// wanted" so a session that begins with a mic already wanted (the game
+	// had it open before this client connected) still sends an initial
+	// enable=1 on its first loop iteration.
+	bool lastSentMicWanted = false;
+	uint32_t lastSentMicSampleRate = 0;
 	std::vector<uint8_t> recvBuffer;
 	std::array<uint8_t, 4096> readBuf{};
 
@@ -371,6 +393,29 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 			}
 		}
 
+		{
+			bool wanted = false;
+			uint32_t sampleRate = 0;
+			{
+				std::lock_guard lock(m_micMutex);
+				wanted = m_micWanted;
+				sampleRate = m_micWantedSampleRate;
+			}
+			if (wanted != lastSentMicWanted || (wanted && sampleRate != lastSentMicSampleRate))
+			{
+				finlink_mic_enable enable;
+				enable.enabled = wanted ? 1 : 0;
+				enable.sample_rate = sampleRate;
+				uint8_t payload[FINLINK_MIC_ENABLE_FRAME_SIZE];
+				finlink_build_mic_enable_frame(&enable, payload);
+				std::vector<uint8_t> message(payload, payload + FINLINK_MIC_ENABLE_FRAME_SIZE);
+				if (!SendWebSocketBinaryFrame(fd, message, m_stop))
+					return;
+				lastSentMicWanted = wanted;
+				lastSentMicSampleRate = sampleRate;
+			}
+		}
+
 		int received = recv(fd, (char*)readBuf.data(), (int)readBuf.size(), 0);
 		if (received == 0)
 			return; // Disconnected.
@@ -412,6 +457,24 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 					{
 						std::lock_guard lock(m_textInputMutex);
 						m_textInputResponse = TextInputResult{resp.confirmed != 0, std::string(resp.text, resp.text_len)};
+					}
+				}
+				else if (type == FINLINK_MSG_MIC_AUDIO)
+				{
+					finlink_audio_frame audio{};
+					if (finlink_parse_mic_audio_frame(parsed->payload.data(), parsed->payload.size(), &audio) == FINLINK_OK)
+					{
+						std::lock_guard lock(m_micMutex);
+						// ~2s cap at typical mic rates -- if FinlinkInputAPI::
+						// ConsumeBlock() ever falls behind that far, drop the
+						// backlog rather than let it grow unboundedly (same
+						// tradeoff SubmitGamepadAudio() makes for the reverse
+						// direction).
+						constexpr size_t kMaxPendingBytes = 48000 * sizeof(int16_t) * 2;
+						const size_t byteLen = audio.sample_count * sizeof(int16_t);
+						if (m_pendingMicAudio.size() + byteLen > kMaxPendingBytes)
+							m_pendingMicAudio.clear();
+						m_pendingMicAudio.insert(m_pendingMicAudio.end(), audio.samples, audio.samples + byteLen);
 					}
 				}
 			}

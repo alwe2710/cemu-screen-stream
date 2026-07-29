@@ -110,6 +110,25 @@ public:
 	// ForwardAudioSamples() "take ownership" contract.
 	bool SubmitGamepadAudio(const int16_t* samples, size_t sampleCount, uint32_t sampleRate, uint8_t channels);
 
+	// GamePad microphone input -- the reverse direction of SubmitGamepadAudio
+	// above. Called from FinlinkInputAPI (src/audio/FinlinkInputAPI.h), the
+	// IAudioInputAPI backend a user selects as the GamePad's microphone
+	// device in General Settings, exactly like a real Cubeb device.
+	//
+	// SetMicWanted mirrors real mic hardware: only actually captures while
+	// the game has the mic open (mic.cpp's MICStatus.drc[x].isOpen, via
+	// mic_updateDevicePlayState() -> IAudioInputAPI::Play()/Stop()), not
+	// continuously just because a client is connected -- causes RunSession
+	// to send a FINLINK_MSG_MIC_ENABLE to the client on the next loop
+	// iteration if the wanted state actually changed.
+	void SetMicWanted(bool wanted, uint32_t sampleRate);
+
+	// Drains and returns whatever mic audio the client has sent since the
+	// last call (never blocks) -- FinlinkInputAPI::ConsumeBlock() polls this
+	// once per AX tick. Empty if nothing new has arrived. Raw s16le bytes,
+	// mono (the Wii U GamePad mic, like the 3DS's, is mono-only).
+	[[nodiscard]] std::vector<uint8_t> PollMicAudio();
+
 private:
 	void AcceptLoop();
 	void ServeConnection(SOCKET fd);
@@ -158,6 +177,15 @@ private:
 	std::vector<int16_t> m_pendingAudioSamples;
 	uint32_t m_audioSampleRate = 48000;
 	uint8_t m_audioChannels = 2;
+
+	// GamePad microphone input pending delivery to FinlinkInputAPI, plus the
+	// want-state going the other way -- separate mutex/fields from the
+	// speaker-audio ones above since these are two independent directions
+	// (out vs in), not reusable state.
+	std::mutex m_micMutex;
+	bool m_micWanted = false;
+	uint32_t m_micWantedSampleRate = 0;
+	std::vector<uint8_t> m_pendingMicAudio; // raw s16le bytes, mono, FIFO
 };
 
 extern std::unique_ptr<WiiuGamepadStream> g_wiiuGamepadStream;
