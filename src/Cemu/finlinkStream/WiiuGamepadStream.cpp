@@ -140,15 +140,12 @@ void WiiuGamepadStream::OnDrcFrame(LatteTextureView* texView)
 	m_frameId++;
 }
 
-std::optional<TouchOverride> WiiuGamepadStream::GetTouchOverride() const noexcept
+std::optional<finlink_extended_input> WiiuGamepadStream::GetInputOverride() const
 {
-	if (!m_streaming.load(std::memory_order_relaxed))
+	if (!m_inputActive.load(std::memory_order_relaxed))
 		return std::nullopt;
-	TouchOverride result;
-	result.pressed = m_touchPressed.load(std::memory_order_relaxed);
-	result.x = m_touchX.load(std::memory_order_relaxed);
-	result.y = m_touchY.load(std::memory_order_relaxed);
-	return result;
+	std::lock_guard lock(m_inputMutex);
+	return m_latestInput;
 }
 
 void WiiuGamepadStream::AcceptLoop()
@@ -227,7 +224,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	RunSession(fd);
 
 	m_streaming = false;
-	m_touchPressed = false;
+	m_inputActive = false;
 	m_active = false;
 	closesocket(fd);
 }
@@ -235,6 +232,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 void WiiuGamepadStream::RunSession(SOCKET fd)
 {
 	m_streaming = true;
+	m_inputActive = true;
 	uint64_t lastSentFrameId = 0;
 	std::vector<uint8_t> recvBuffer;
 	std::array<uint8_t, 4096> readBuf{};
@@ -283,12 +281,11 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 					return;
 				if (parsed->opcode != FINLINK_WS_OPCODE_BINARY)
 					continue;
-				finlink_touch_state touch{};
-				if (finlink_parse_touch_frame(parsed->payload.data(), parsed->payload.size(), &touch) == FINLINK_OK)
+				finlink_extended_input input{};
+				if (finlink_parse_extended_input_frame(parsed->payload.data(), parsed->payload.size(), &input) == FINLINK_OK)
 				{
-					m_touchPressed = touch.pressed != 0;
-					m_touchX = touch.x;
-					m_touchY = touch.y;
+					std::lock_guard lock(m_inputMutex);
+					m_latestInput = input;
 				}
 			}
 		}

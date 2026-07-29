@@ -24,12 +24,12 @@ namespace Cemu::FinlinkStream
 
 constexpr int kProtocolVersion = 2;
 constexpr char kStreamType[] = "WIIU_GAMEPAD";
-// Reusing "n3ds_touch" rather than a new name: the wire format (u8 pressed +
-// u16le x + u16le y) is identical across every secondary-screen stream type,
-// and the coordinate space is documented as "whatever hello.video declares"
-// -- see docs/protocol.md's WebSocket-binäre-Frames section, generalized
-// when NDS_BOTTOM_SCREEN was added for the same reason.
-constexpr char kInputEncoding[] = "n3ds_touch";
+// Same combined touch+buttons+dual-analog-stick encoding Azahar's
+// N3DS_BOTTOM_SCREEN advertises (finlink/protocol.h's
+// finlink_extended_input) -- the Wii U GamePad has real remote-controllable
+// buttons and a circle-pad-equivalent stick in addition to touch, unlike a
+// touch-only secondary screen.
+constexpr char kInputEncoding[] = "n3ds_touch_and_buttons";
 constexpr uint32_t kStreamWidth = 854;
 constexpr uint32_t kStreamHeight = 480;
 // The Wii U's DRC scanout runs at the console's fixed video output refresh

@@ -49,38 +49,93 @@ enum ControllerVPADMapping2 : uint32
 	VPAD_REPEAT = 0x80000000,
 };
 
+namespace
+{
+// finlink_button_bit (finlink/protocol.h) -> the ControllerVPADMapping2 bit
+// each one most directly corresponds to -- see finlink_extended_input's own
+// comment on this being a superset of buttons across consoles, of which the
+// Wii U GamePad happens to have (and remote-control) all of them.
+uint32 MapFinlinkButtonsToVpad(uint32 finlinkButtons)
+{
+	uint32 hold = 0;
+	if (finlinkButtons & FINLINK_BUTTON_A) hold |= VPAD_A;
+	if (finlinkButtons & FINLINK_BUTTON_B) hold |= VPAD_B;
+	if (finlinkButtons & FINLINK_BUTTON_X) hold |= VPAD_X;
+	if (finlinkButtons & FINLINK_BUTTON_Y) hold |= VPAD_Y;
+	if (finlinkButtons & FINLINK_BUTTON_L) hold |= VPAD_L;
+	if (finlinkButtons & FINLINK_BUTTON_R) hold |= VPAD_R;
+	if (finlinkButtons & FINLINK_BUTTON_ZL) hold |= VPAD_ZL;
+	if (finlinkButtons & FINLINK_BUTTON_ZR) hold |= VPAD_ZR;
+	if (finlinkButtons & FINLINK_BUTTON_SELECT) hold |= VPAD_MINUS;
+	if (finlinkButtons & FINLINK_BUTTON_START) hold |= VPAD_PLUS;
+	if (finlinkButtons & FINLINK_BUTTON_UP) hold |= VPAD_UP;
+	if (finlinkButtons & FINLINK_BUTTON_DOWN) hold |= VPAD_DOWN;
+	if (finlinkButtons & FINLINK_BUTTON_LEFT) hold |= VPAD_LEFT;
+	if (finlinkButtons & FINLINK_BUTTON_RIGHT) hold |= VPAD_RIGHT;
+	if (finlinkButtons & FINLINK_BUTTON_HOME) hold |= VPAD_HOME;
+	return hold;
+}
+}
+
 void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 {
 	controllers_update_states();
 	m_mic_active = false;
 	m_screen_active = false;
-	for (uint32 i = kButtonId_A; i < kButtonId_Max; ++i)
+
+	// A remote finlink client streaming the GamePad screen (see
+	// Cemu/finlinkStream/WiiuGamepadStream.h) wholesale overrides
+	// buttons/sticks too, same as it already does touch (update_touch()
+	// above, from the same GetInputOverride() call) -- local controller
+	// input is ignored entirely for the duration of the remote session
+	// rather than merged with it, avoiding ambiguous combined-input
+	// semantics. axis/rotation feed the exact same stick-direction ->
+	// hold-bit threshold logic below either way, just sourced from the
+	// remote stick position instead of a local controller's.
+	const auto remoteInput = Cemu::FinlinkStream::g_wiiuGamepadStream
+	                              ? Cemu::FinlinkStream::g_wiiuGamepadStream->GetInputOverride()
+	                              : std::nullopt;
+
+	glm::vec2 axis, rotation;
+	if (remoteInput)
 	{
-		// axis will be aplied later
-		if (is_axis_mapping(i))
-			continue;
-
-		if (is_mapping_down(i))
+		status.hold = MapFinlinkButtonsToVpad(remoteInput->buttons);
+		m_homebutton_down |= (remoteInput->buttons & FINLINK_BUTTON_HOME) != 0;
+		axis = {remoteInput->left_x / 32767.0f, remoteInput->left_y / 32767.0f};
+		rotation = {remoteInput->right_x / 32767.0f, remoteInput->right_y / 32767.0f};
+	}
+	else
+	{
+		for (uint32 i = kButtonId_A; i < kButtonId_Max; ++i)
 		{
-			const uint32 value = get_emulated_button_flag(i);
-			if (value == 0)
-			{
-				// special buttons
-				if (i == kButtonId_Mic)
-					m_mic_active = true;
-				else if (i == kButtonId_Screen)
-					m_screen_active = true;
-
+			// axis will be aplied later
+			if (is_axis_mapping(i))
 				continue;
-			}
 
-			status.hold |= value;
+			if (is_mapping_down(i))
+			{
+				const uint32 value = get_emulated_button_flag(i);
+				if (value == 0)
+				{
+					// special buttons
+					if (i == kButtonId_Mic)
+						m_mic_active = true;
+					else if (i == kButtonId_Screen)
+						m_screen_active = true;
+
+					continue;
+				}
+
+				status.hold |= value;
+			}
 		}
+
+		m_homebutton_down |= is_home_down();
+
+		axis = get_axis();
+		rotation = get_rotation();
 	}
 
-	m_homebutton_down |= is_home_down();
-
-	const auto axis = get_axis();
 	status.leftStick.x = axis.x;
 	status.leftStick.y = axis.y;
 
@@ -98,7 +153,6 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	else if (axis.y >= kAxisThreshold || (HAS_FLAG(last_hold, VPAD_STICK_L_UP) && axis.y >= kHoldAxisThreshold))
 		status.hold |= VPAD_STICK_L_UP;
 
-	const auto rotation = get_rotation();
 	status.rightStick.x = rotation.x;
 	status.rightStick.y = rotation.y;
 
@@ -196,26 +250,26 @@ void VPADController::update_touch(VPADStatus_t& status)
 	status.tpData.y = (uint16)m_last_touch_position.y;
 
 	// A remote finlink client streaming the GamePad screen (see
-	// Cemu/finlinkStream/WiiuGamepadStream.h) wholesale overrides touch
-	// only -- buttons/sticks (handled elsewhere in VPADRead()) always stay
-	// local. Deliberately a short-circuit here rather than routing through
-	// InputManager's mouse-emulation path below: that path's coordinates
-	// are relative to the *local* GamePad View window's on-screen pixel
-	// rectangle (LatteRenderTarget_getScreenImageArea), which has no
-	// meaning for a remote client that may have no local window open at
-	// all. The remote touch is already normalized to the DRC's own
-	// 854x480 pixel space (finlink's docs/protocol.md, same n3ds_touch
-	// convention the other secondary-screen stream types use), so it only
-	// needs the same raw-digitizer-range formula the code below already
-	// applies to a relative position.
+	// Cemu/finlinkStream/WiiuGamepadStream.h) wholesale overrides touch --
+	// buttons/sticks are handled separately in VPADRead(), from the same
+	// GetInputOverride() call. Deliberately a short-circuit here rather
+	// than routing through InputManager's mouse-emulation path below: that
+	// path's coordinates are relative to the *local* GamePad View window's
+	// on-screen pixel rectangle (LatteRenderTarget_getScreenImageArea),
+	// which has no meaning for a remote client that may have no local
+	// window open at all. The remote touch is already normalized to the
+	// DRC's own 854x480 pixel space (finlink's docs/protocol.md, same
+	// n3ds_touch convention the other secondary-screen stream types use),
+	// so it only needs the same raw-digitizer-range formula the code below
+	// already applies to a relative position.
 	if (Cemu::FinlinkStream::g_wiiuGamepadStream)
 	{
-		if (auto touch = Cemu::FinlinkStream::g_wiiuGamepadStream->GetTouchOverride())
+		if (auto input = Cemu::FinlinkStream::g_wiiuGamepadStream->GetInputOverride())
 		{
-			if (touch->pressed)
+			if (input->pressed)
 			{
-				const float relX = std::clamp(touch->x / 854.0f, 0.0f, 1.0f);
-				const float relY = std::clamp(touch->y / 480.0f, 0.0f, 1.0f);
+				const float relX = std::clamp(input->touch_x / 854.0f, 0.0f, 1.0f);
+				const float relY = std::clamp(input->touch_y / 480.0f, 0.0f, 1.0f);
 
 				status.tpData.touch = kTpTouchOn;
 				status.tpData.validity = kTpValid;

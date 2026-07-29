@@ -103,6 +103,7 @@ target_include_directories(CemuInput PUBLIC "../")
 target_link_libraries(CemuInput PRIVATE
 	CemuCommon
 	CemuGui
+	finlink_core
 )
 
 if (ENABLE_BLUEZ)

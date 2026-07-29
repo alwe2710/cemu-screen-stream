@@ -29,14 +29,16 @@
 // GPU stall -- see Renderer::CaptureStreamFrame()'s own comment -- so
 // OnDrcFrame() throttles how often it actually triggers one.
 //
-// Touch injection: deliberately NOT applied from OnDrcFrame() or from the
-// network thread directly -- VPADController::update_touch() (which already
-// safely runs on the CPU/game thread) is where GetTouchOverride() is
-// consumed instead, mirroring exactly how azahar/melonDS's own touch
-// overrides work: the network thread only ever writes lock-free atomics,
-// never calls into game/console state directly.
+// Touch/button/stick injection: deliberately NOT applied from OnDrcFrame()
+// or from the network thread directly -- VPADController::VPADRead() (which
+// already safely runs on the CPU/game thread) is where GetInputOverride()
+// is consumed instead, mirroring exactly how azahar/melonDS's own input
+// overrides work: the network thread only ever writes the latched struct
+// below under a mutex, never calls into game/console state directly.
 
 #include "Common/socket.h"
+
+#include <finlink/protocol.h>
 
 #include <atomic>
 #include <chrono>
@@ -54,13 +56,6 @@ namespace Cemu::FinlinkStream
 
 class Beacon;
 
-struct TouchOverride
-{
-	bool pressed;
-	uint16_t x;
-	uint16_t y;
-};
-
 class WiiuGamepadStream
 {
 public:
@@ -72,7 +67,7 @@ public:
 
 	void OnDrcFrame(LatteTextureView* texView);
 
-	[[nodiscard]] std::optional<TouchOverride> GetTouchOverride() const noexcept;
+	[[nodiscard]] std::optional<finlink_extended_input> GetInputOverride() const;
 
 private:
 	void AcceptLoop();
@@ -101,10 +96,10 @@ private:
 	int m_latestFrameHeight = 0;
 	uint64_t m_frameId = 0;
 
-	std::atomic_bool m_streaming{false}; // session_ready sent, touch override live
-	std::atomic_bool m_touchPressed{false};
-	std::atomic<uint16_t> m_touchX{0};
-	std::atomic<uint16_t> m_touchY{0};
+	std::atomic_bool m_streaming{false}; // session_ready sent, input override live
+	std::atomic_bool m_inputActive{false};
+	mutable std::mutex m_inputMutex;
+	finlink_extended_input m_latestInput{};
 };
 
 extern std::unique_ptr<WiiuGamepadStream> g_wiiuGamepadStream;
