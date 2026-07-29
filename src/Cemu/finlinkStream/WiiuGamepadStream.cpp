@@ -29,6 +29,30 @@ void AppendU32LE(std::vector<uint8_t>& out, uint32_t value)
 	out.push_back((uint8_t)((value >> 24) & 0xFF));
 }
 
+void AppendS16LE(std::vector<uint8_t>& out, int16_t value)
+{
+	out.push_back((uint8_t)(value & 0xFF));
+	out.push_back((uint8_t)((value >> 8) & 0xFF));
+}
+
+// Hand-built the same way SendVideoFrame() builds a type=1 message -- no
+// finlink_build_audio_frame() exists in core since, like video, the actual
+// sample layout/rate is entirely up to each emulator's own audio pipeline
+// (see finlink/protocol.h's finlink_audio_frame: type=3, sample_rate u32le,
+// channels u8, then raw s16le samples, no further structure).
+bool SendAudioFrame(SOCKET fd, const std::vector<int16_t>& samples, uint32_t sampleRate, uint8_t channels, const std::atomic_bool& stop)
+{
+	std::vector<uint8_t> message;
+	message.reserve(6 + samples.size() * sizeof(int16_t));
+	message.push_back((uint8_t)FINLINK_MSG_AUDIO);
+	AppendU32LE(message, sampleRate);
+	message.push_back(channels);
+	for (int16_t sample : samples)
+		AppendS16LE(message, sample);
+
+	return SendWebSocketBinaryFrame(fd, message, stop);
+}
+
 // Converts VulkanRenderer::CaptureStreamFrame()'s R8G8B8A8 output into
 // row-major u16le RGB565. No vertical flip: the DRC texture is already
 // top-down row-major from Cemu's own perspective (glReadPixels-style
@@ -148,6 +172,42 @@ std::optional<finlink_extended_input> WiiuGamepadStream::GetInputOverride() cons
 	return m_latestInput;
 }
 
+void WiiuGamepadStream::RequestTextInput(const std::string& initialText, uint32_t maxLength)
+{
+	std::lock_guard lock(m_textInputMutex);
+	m_textInputRequestPending = true;
+	m_textInputRequestInitialText = initialText;
+	m_textInputRequestMaxLength = maxLength;
+}
+
+std::optional<WiiuGamepadStream::TextInputResult> WiiuGamepadStream::PollTextInputResponse()
+{
+	std::lock_guard lock(m_textInputMutex);
+	auto result = std::move(m_textInputResponse);
+	m_textInputResponse.reset();
+	return result;
+}
+
+bool WiiuGamepadStream::SubmitGamepadAudio(const int16_t* samples, size_t sampleCount, uint32_t sampleRate, uint8_t channels)
+{
+	if (!m_active.load(std::memory_order_relaxed))
+		return false; // No client connected -- caller should play locally as usual.
+
+	std::lock_guard lock(m_audioMutex);
+	m_audioSampleRate = sampleRate;
+	m_audioChannels = channels;
+
+	// ~2s of backlog at 48kHz stereo -- if the network thread ever falls
+	// behind that far (a stalled/slow client), drop the backlog rather than
+	// let it grow unbounded or block the audio thread; a brief gap is far
+	// less disruptive than unbounded latency growth.
+	constexpr size_t kMaxPendingSamples = 48000 * 2 * 2;
+	if (m_pendingAudioSamples.size() + sampleCount > kMaxPendingSamples)
+		m_pendingAudioSamples.clear();
+	m_pendingAudioSamples.insert(m_pendingAudioSamples.end(), samples, samples + sampleCount);
+	return true; // Took ownership -- caller must not also play these locally.
+}
+
 void WiiuGamepadStream::AcceptLoop()
 {
 	if (m_listenSocket == INVALID_SOCKET)
@@ -259,6 +319,58 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 			lastSentFrameId = currentId;
 		}
 
+		{
+			std::vector<int16_t> audioSamples;
+			uint32_t audioSampleRate = 48000;
+			uint8_t audioChannels = 2;
+			{
+				std::lock_guard lock(m_audioMutex);
+				if (!m_pendingAudioSamples.empty())
+				{
+					audioSamples = std::move(m_pendingAudioSamples);
+					m_pendingAudioSamples.clear();
+					audioSampleRate = m_audioSampleRate;
+					audioChannels = m_audioChannels;
+				}
+			}
+			if (!audioSamples.empty())
+			{
+				if (!SendAudioFrame(fd, audioSamples, audioSampleRate, audioChannels, m_stop))
+					return;
+			}
+		}
+
+		{
+			std::string initialText;
+			uint32_t maxLength = 0;
+			bool pending = false;
+			{
+				std::lock_guard lock(m_textInputMutex);
+				pending = m_textInputRequestPending;
+				if (pending)
+				{
+					initialText = m_textInputRequestInitialText;
+					maxLength = m_textInputRequestMaxLength;
+					m_textInputRequestPending = false;
+				}
+			}
+			if (pending)
+			{
+				finlink_text_input_request req;
+				req.max_length = maxLength;
+				req.text = initialText.data();
+				req.text_len = initialText.size();
+				std::vector<uint8_t> payload(finlink_text_input_request_max_size(initialText.size()));
+				size_t payloadLen = finlink_build_text_input_request(&req, payload.data(), payload.size());
+				if (payloadLen > 0)
+				{
+					payload.resize(payloadLen);
+					if (!SendWebSocketBinaryFrame(fd, payload, m_stop))
+						return;
+				}
+			}
+		}
+
 		int received = recv(fd, (char*)readBuf.data(), (int)readBuf.size(), 0);
 		if (received == 0)
 			return; // Disconnected.
@@ -281,11 +393,26 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 					return;
 				if (parsed->opcode != FINLINK_WS_OPCODE_BINARY)
 					continue;
-				finlink_extended_input input{};
-				if (finlink_parse_extended_input_frame(parsed->payload.data(), parsed->payload.size(), &input) == FINLINK_OK)
+				finlink_msg_type type;
+				if (finlink_peek_type(parsed->payload.data(), parsed->payload.size(), &type) != FINLINK_OK)
+					continue;
+				if (type == FINLINK_MSG_INPUT)
 				{
-					std::lock_guard lock(m_inputMutex);
-					m_latestInput = input;
+					finlink_extended_input input{};
+					if (finlink_parse_extended_input_frame(parsed->payload.data(), parsed->payload.size(), &input) == FINLINK_OK)
+					{
+						std::lock_guard lock(m_inputMutex);
+						m_latestInput = input;
+					}
+				}
+				else if (type == FINLINK_MSG_TEXT_INPUT_RESPONSE)
+				{
+					finlink_text_input_response resp{};
+					if (finlink_parse_text_input_response(parsed->payload.data(), parsed->payload.size(), &resp) == FINLINK_OK)
+					{
+						std::lock_guard lock(m_textInputMutex);
+						m_textInputResponse = TextInputResult{resp.confirmed != 0, std::string(resp.text, resp.text_len)};
+					}
 				}
 			}
 		}

@@ -4,6 +4,7 @@
 #include "audio/IAudioAPI.h"
 //#include "ax.h"
 #include "config/CemuConfig.h"
+#include "Cemu/finlinkStream/WiiuGamepadStream.h"
 
 namespace snd_core
 {
@@ -309,7 +310,18 @@ namespace snd_core
 
 		std::shared_lock lock(g_audioMutex);
 
-		const uint32 channels = g_padAudio ? g_padAudio->GetChannels() : AX_DRC_CHANNEL_COUNT;
+		// AIGetSamplesPerChannel(AX_DEV_DRC) always returns AX_SAMPLES_PER_3MS_48KHZ
+		// regardless of __AXMode[AX_DEV_DRC] (see AIGetSamplesPerChannel()
+		// above), so sampleCount / AX_SAMPLES_PER_3MS_48KHZ is exactly the
+		// channel count AXOut_SubmitDRCFrame() actually wrote into
+		// sampleData for *this* call (2 for AX_MODE_STEREO and the
+		// mono-upmixed-to-stereo AX_MODE_MONO, 6 for AX_MODE_6CH) --
+		// deriving it from g_padAudio->GetChannels() instead (as before)
+		// silently produced the wrong stride whenever no local GamePad
+		// audio device was configured (g_padAudio null), which finlink
+		// forwarding below now depends on being correct even when there's
+		// no local device at all.
+		const uint32 channels = (uint32)(sampleCount / AX_SAMPLES_PER_3MS_48KHZ);
 		sint16* outputChannel = tempDRCChannelData + AX_SAMPLES_PER_3MS_48KHZ * tempDRCAudioBlockCounter * channels;
 		for (sint32 i = 0; i < sampleCount; ++i)
 		{
@@ -319,7 +331,19 @@ namespace snd_core
 		tempDRCAudioBlockCounter++;
 		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
-			if (g_padAudio)
+			// While a finlink client is connected, GamePad audio is meant to
+			// play exclusively there instead of also locally -- forward the
+			// accumulated block and, if it was taken, skip the local
+			// g_padAudio playback below (see WiiuGamepadStream::
+			// SubmitGamepadAudio()'s own comment).
+			bool consumedByFinlink = false;
+			if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+			{
+				const size_t blockSampleCount = (size_t)AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP * channels;
+				consumedByFinlink = Cemu::FinlinkStream::g_wiiuGamepadStream->SubmitGamepadAudio(tempDRCChannelData, blockSampleCount, 48000, (uint8_t)channels);
+			}
+
+			if (g_padAudio && !consumedByFinlink)
 				g_padAudio->FeedBlock(tempDRCChannelData);
 
 			tempDRCAudioBlockCounter = 0;

@@ -86,6 +86,12 @@ std::string BuildHelloMessage()
 		<< "\"pixel_format\":\"rgb565\","
 		<< "\"fps\":" << kStreamFps
 		<< "},"
+		// Advisory only, like video above -- the actual sample_rate/channels
+		// of every FINLINK_MSG_AUDIO frame are carried in that frame's own
+		// header (see ax_out.cpp's AIInitDRCDMA()/WiiuGamepadStream::
+		// SubmitGamepadAudio()), this is just a hint for a client that wants
+		// to prepare its audio pipeline ahead of the first frame.
+		<< "\"audio\":{\"sample_rate\":48000,\"channels\":2},"
 		<< "\"input_encoding\":\"" << kInputEncoding << "\""
 		<< "}";
 	return out.str();
@@ -118,9 +124,9 @@ std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload)
 
 std::string BuildSessionReadyMessage()
 {
-	// No real video negotiation for this stream type: fixed 854x480, no
-	// audio, no redirect (single slot) -- same simplification as the
-	// azahar/melonDS implementations of the same feature.
+	// No real video/audio negotiation for this stream type: fixed 854x480
+	// and 48kHz/stereo, no redirect (single slot) -- same simplification as
+	// the azahar/melonDS implementations of the same feature.
 	std::ostringstream out;
 	out.precision(10);
 	out << "{"
@@ -130,7 +136,8 @@ std::string BuildSessionReadyMessage()
 		<< "\"width\":" << kStreamWidth << ","
 		<< "\"height\":" << kStreamHeight << ","
 		<< "\"fps\":" << kStreamFps
-		<< "}"
+		<< "},"
+		<< "\"audio\":{\"sample_rate\":48000,\"channels\":2}"
 		<< "}";
 	return out.str();
 }

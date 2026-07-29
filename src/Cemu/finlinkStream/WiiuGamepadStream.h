@@ -46,6 +46,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -68,6 +69,46 @@ public:
 	void OnDrcFrame(LatteTextureView* texView);
 
 	[[nodiscard]] std::optional<finlink_extended_input> GetInputOverride() const;
+
+	// True whenever a client is connected and streaming (single slot, see
+	// m_active below). GeneralSettings2 reads this once at dialog-open time
+	// to decide whether to gray out the GamePad audio device/channels
+	// controls -- same "snapshot at construction" pattern that dialog
+	// already uses for its game_launched parameter, not a live-updated
+	// state.
+	[[nodiscard]] bool IsActive() const { return m_active.load(std::memory_order_relaxed); }
+
+	struct TextInputResult
+	{
+		bool confirmed;
+		std::string text;
+	};
+
+	// Text input (Wii U's software keyboard, swkbd.cpp) -- server->client
+	// request / client->server response. A much rarer, one-shot traffic
+	// pattern than video/input, so this is a simple "arm a request, poll
+	// for the response" API rather than a continuous stream like
+	// GetInputOverride(). Safe to call from any thread (swkbd.cpp calls it
+	// from the CPU/game thread) -- the actual WS send happens on the
+	// session thread, same "network thread owns the socket" separation as
+	// everything else here.
+	void RequestTextInput(const std::string& initialText, uint32_t maxLength);
+
+	// Returns and clears the latest response once, or nullopt if none is
+	// pending. Non-blocking; swkbd.cpp polls this once per SwkbdCalc() call
+	// while its own keyboard state is active.
+	[[nodiscard]] std::optional<TextInputResult> PollTextInputResponse();
+
+	// Wii U GamePad speaker audio -- called from the audio (AX) thread via a
+	// hook in ax_out.cpp's AIInitDRCDMA(), once per accumulated audio block.
+	// Returns true if a client is connected, meaning these samples are now
+	// this stream's to deliver: the caller must NOT also feed them to the
+	// local g_padAudio device, so GamePad audio plays exclusively on the
+	// finlink client while it's connected instead of also locally. Returns
+	// false (no client connected) if the caller should play them back
+	// locally as usual -- mirrors dolphin-gba-stream's own
+	// ForwardAudioSamples() "take ownership" contract.
+	bool SubmitGamepadAudio(const int16_t* samples, size_t sampleCount, uint32_t sampleRate, uint8_t channels);
 
 private:
 	void AcceptLoop();
@@ -100,6 +141,23 @@ private:
 	std::atomic_bool m_inputActive{false};
 	mutable std::mutex m_inputMutex;
 	finlink_extended_input m_latestInput{};
+
+	std::mutex m_textInputMutex;
+	bool m_textInputRequestPending = false;
+	std::string m_textInputRequestInitialText;
+	uint32_t m_textInputRequestMaxLength = 0;
+	std::optional<TextInputResult> m_textInputResponse;
+
+	// GamePad speaker audio pending delivery to the client, appended to by
+	// SubmitGamepadAudio() (audio thread) and drained by RunSession()
+	// (network thread) once per loop iteration -- a FIFO queue rather than
+	// a "latest wins" latch like m_latestFrameRgba above, since audio is a
+	// continuous stream where dropping anything but a bounded backlog would
+	// produce audible gaps.
+	std::mutex m_audioMutex;
+	std::vector<int16_t> m_pendingAudioSamples;
+	uint32_t m_audioSampleRate = 48000;
+	uint8_t m_audioChannels = 2;
 };
 
 extern std::unique_ptr<WiiuGamepadStream> g_wiiuGamepadStream;

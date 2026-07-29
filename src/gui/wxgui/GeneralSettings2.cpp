@@ -7,6 +7,7 @@
 #include "util/helpers/helpers.h"
 
 #include "Cafe/OS/libs/snd_core/ax.h"
+#include "Cemu/finlinkStream/WiiuGamepadStream.h"
 
 #include <wx/collpane.h>
 #include <wx/clrpicker.h>
@@ -638,6 +639,22 @@ wxPanel* GeneralSettings2::AddAudioPage(wxNotebook* notebook)
 
 		box_sizer->Add(audio_pad_row, 1, wxEXPAND, 5);
 		audio_panel_sizer->Add(box_sizer, 0, wxEXPAND | wxALL, 5);
+
+		// While a finlink client is connected, GamePad audio plays
+		// exclusively on that client (see ax_out.cpp's AIInitDRCDMA()) --
+		// the local device/channel choice has no effect in that state, so
+		// gray it out rather than leave a setting that silently does
+		// nothing. Snapshotted once here at dialog-construction time, same
+		// as m_game_launched above: this dialog isn't live-updated while
+		// open.
+		if (Cemu::FinlinkStream::g_wiiuGamepadStream && Cemu::FinlinkStream::g_wiiuGamepadStream->IsActive())
+		{
+			const wxString reason = _("Disabled while a finlink client is connected: GamePad audio plays exclusively on that client.");
+			m_pad_device->Disable();
+			m_pad_device->SetToolTip(reason);
+			m_pad_channels->Disable();
+			m_pad_channels->SetToolTip(reason);
+		}
 	}
 
 	{

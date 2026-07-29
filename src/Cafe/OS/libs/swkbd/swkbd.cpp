@@ -2,6 +2,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_FS.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
+#include "Cemu/finlinkStream/WiiuGamepadStream.h"
 
 #include <imgui.h>
 #include "imgui/imgui_extension.h"
@@ -222,6 +223,19 @@ uint32 SwkbdAppearInputForm(const swkbdAppearArg_t* appearArg)
 		swkbdInternalState->formStringBuffer[0] = '\0';
 		swkbdInternalState->formStringLength = 0;
 	}
+
+	// The local ImGui keyboard (swkbd_render() below) is drawn as a host-
+	// side overlay that never reaches the finlink video capture (that reads
+	// the DRC scan buffer directly, not the local window's composited
+	// output) -- ask a connected remote client to show its own native text
+	// input UI instead, otherwise there'd be no way to type at all from
+	// there. See WiiuGamepadStream::RequestTextInput()'s own comment.
+	if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+	{
+		std::wstring initialText(swkbdInternalState->formStringBuffer, swkbdInternalState->formStringLength);
+		Cemu::FinlinkStream::g_wiiuGamepadStream->RequestTextInput(boost::nowide::narrow(initialText),
+		                                                            (uint32_t)swkbdInternalState->maxTextLength);
+	}
 	return 1;
 }
 
@@ -241,6 +255,17 @@ uint32 SwkbdAppearKeyboard(const SwkbdKeyboardArg_t* keyboardArg)
 	swkbdInternalState->formStringBuffer[0] = '\0';
 	swkbdInternalState->formStringLength = 0;
 	swkbdInternalState->keyboardArg = *keyboardArg;
+
+	// Same reasoning as SwkbdAppearInputForm() -- keyboard-only mode starts
+	// with an empty field (formStringBuffer was just cleared above), and its
+	// own max length lives in receiverArg.stringBufSize rather than
+	// maxTextLength, same convention swkbd_keyInput() already uses.
+	if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+	{
+		const uint32 stringBufferSize = swkbdInternalState->keyboardArg.receiverArg.stringBufSize;
+		const uint32_t maxLength = stringBufferSize > 1 ? (uint32_t)(stringBufferSize - 1) : 0;
+		Cemu::FinlinkStream::g_wiiuGamepadStream->RequestTextInput(std::string(), maxLength);
+	}
 	return 1;
 }
 
@@ -391,9 +416,46 @@ void SwkbdCalcSubThreadPredict()
 	coreinit::OSSleepTicks(ESPRESSO_TIMER_CLOCK / 200); // simulate 5ms of working time
 }
 
+void swkbd_finishInput();
+void swkbd_inputStringChanged();
+
 void SwkbdCalc(void* controllerInfo)
 {
-	// no op for now
+	// Polled by the game every frame while the keyboard is up -- the
+	// natural place to check for a remote client's finlink text input
+	// response (see SwkbdAppearInputForm()'s own comment) and apply it as
+	// if the user had typed it locally.
+	if (Cemu::FinlinkStream::g_wiiuGamepadStream && swkbdInternalState && swkbdInternalState->isActive)
+	{
+		if (auto result = Cemu::FinlinkStream::g_wiiuGamepadStream->PollTextInputResponse())
+		{
+			const std::wstring wtext = boost::nowide::widen(result->text);
+
+			sint32 maxLength;
+			if (swkbdInternalState->keyboardOnlyMode)
+			{
+				const uint32 stringBufferSize = swkbdInternalState->keyboardArg.receiverArg.stringBufSize;
+				maxLength = stringBufferSize > 1 ? (sint32)(stringBufferSize - 1) : 0;
+			}
+			else
+			{
+				maxLength = swkbdInternalState->maxTextLength;
+			}
+
+			sint32 newLength = (sint32)wtext.size();
+			if (newLength > maxLength)
+				newLength = maxLength;
+
+			swkbdInternalState->formStringLength = newLength;
+			for (sint32 i = 0; i < newLength; i++)
+				swkbdInternalState->formStringBuffer[i] = wtext[i];
+			swkbdInternalState->formStringBuffer[newLength] = L'\0';
+			swkbd_inputStringChanged();
+
+			if (result->confirmed)
+				swkbd_finishInput();
+		}
+	}
 }
 
 void swkbd_keyInput(uint32 keyCode);
