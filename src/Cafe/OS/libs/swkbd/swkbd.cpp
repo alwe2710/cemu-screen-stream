@@ -262,8 +262,17 @@ uint32 SwkbdAppearKeyboard(const SwkbdKeyboardArg_t* keyboardArg)
 	// maxTextLength, same convention swkbd_keyInput() already uses.
 	if (Cemu::FinlinkStream::g_wiiuGamepadStream)
 	{
+		// stringBufSize comes straight from guest memory (keyboardArg is a
+		// raw copy of what the game passed in) -- unlike maxTextLength
+		// (SwkbdAppearInputForm(), clamped to SWKBD_FORM_STRING_MAX_LENGTH-1
+		// at setup time already), nothing bounds it here otherwise. Clamped
+		// the same way so a game that (accidentally or not) requests an
+		// oversized buffer never gets advertised a max_length the client
+		// could legitimately fill past what SwkbdCalc()'s formStringBuffer
+		// write can actually hold.
 		const uint32 stringBufferSize = swkbdInternalState->keyboardArg.receiverArg.stringBufSize;
-		const uint32_t maxLength = stringBufferSize > 1 ? (uint32_t)(stringBufferSize - 1) : 0;
+		uint32_t maxLength = stringBufferSize > 1 ? (uint32_t)(stringBufferSize - 1) : 0;
+		maxLength = std::min(maxLength, (uint32_t)SWKBD_FORM_STRING_MAX_LENGTH - 1);
 		Cemu::FinlinkStream::g_wiiuGamepadStream->RequestTextInput(std::string(), maxLength);
 	}
 	return 1;
@@ -434,6 +443,15 @@ void SwkbdCalc(void* controllerInfo)
 			sint32 maxLength;
 			if (swkbdInternalState->keyboardOnlyMode)
 			{
+				// stringBufSize is guest/game-controlled (keyboardArg is a
+				// raw copy of what the game passed in) and, unlike
+				// maxTextLength below, isn't clamped anywhere upstream --
+				// SwkbdAppearKeyboard() now clamps what it advertises to the
+				// client via RequestTextInput(), but this still has to
+				// clamp independently too: formStringBuffer is only ever
+				// SWKBD_FORM_STRING_MAX_LENGTH wchar_t wide, and this write
+				// must never exceed that regardless of what any client
+				// (well-behaved or not) actually sends back.
 				const uint32 stringBufferSize = swkbdInternalState->keyboardArg.receiverArg.stringBufSize;
 				maxLength = stringBufferSize > 1 ? (sint32)(stringBufferSize - 1) : 0;
 			}
@@ -441,6 +459,11 @@ void SwkbdCalc(void* controllerInfo)
 			{
 				maxLength = swkbdInternalState->maxTextLength;
 			}
+			// Belt-and-suspenders: formStringBuffer is a fixed
+			// SWKBD_FORM_STRING_MAX_LENGTH-element array no matter which
+			// branch above ran, so the write below must never index past
+			// that regardless of how maxLength was computed.
+			maxLength = std::min(maxLength, SWKBD_FORM_STRING_MAX_LENGTH - 1);
 
 			sint32 newLength = (sint32)wtext.size();
 			if (newLength > maxLength)
