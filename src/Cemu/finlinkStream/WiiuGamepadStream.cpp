@@ -474,6 +474,15 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 					if (finlink_parse_mic_audio_frame(parsed->payload.data(), parsed->payload.size(), &audio) == FINLINK_OK)
 					{
 						std::lock_guard lock(m_micMutex);
+						// PollMicAudio()/FinlinkInputAPI::ConsumeBlock() only
+						// ever see raw sample bytes, not a rate -- they trust
+						// the client to always send at whatever rate the
+						// last MIC_ENABLE requested. Reject anything else
+						// here instead, rather than silently mixing
+						// differently-rated audio into one buffer that gets
+						// played back as if it were all m_micWantedSampleRate.
+						if (audio.sample_rate != m_micWantedSampleRate)
+							continue;
 						// ~2s cap at typical mic rates -- if FinlinkInputAPI::
 						// ConsumeBlock() ever falls behind that far, drop the
 						// backlog rather than let it grow unboundedly (same
