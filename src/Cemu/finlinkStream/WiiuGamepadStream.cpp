@@ -301,6 +301,15 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	m_streaming = false;
 	m_inputActive = false;
 	m_active = false;
+	// Drop any mic audio this client sent but nobody drained yet -- left
+	// sitting here, it would otherwise get fed to FinlinkInputAPI::
+	// ConsumeBlock() as if it were fresh once a later session (or a
+	// belated poll from this one) reads it, mislabeling stale audio as
+	// current.
+	{
+		std::lock_guard lock(m_micMutex);
+		m_pendingMicAudio.clear();
+	}
 	closesocket(fd);
 }
 
