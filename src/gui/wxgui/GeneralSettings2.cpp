@@ -698,6 +698,23 @@ wxPanel* GeneralSettings2::AddAudioPage(wxNotebook* notebook)
 
 		box_sizer->Add(audio_input_row, 1, wxEXPAND, 5);
 		audio_panel_sizer->Add(box_sizer, 0, wxEXPAND | wxALL, 5);
+
+		// Whenever finlink GamePad streaming is enabled (not just while a
+		// client is actually connected -- same g_wiiuGamepadStream
+		// non-null check as the GamePad-output block above), the mic is
+		// forcibly sourced from the Finlink Remote Microphone device
+		// regardless of this setting (see mic.cpp's micExport_MICInit()),
+		// so gray it out rather than leave a local-device choice that
+		// silently has no effect. Snapshotted once here at dialog-
+		// construction time, same as the GamePad-output block.
+		if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+		{
+			const wxString reason = _("Disabled while finlink streaming is enabled: the microphone is forced to the Finlink Remote Microphone.");
+			m_input_device->Disable();
+			m_input_device->SetToolTip(reason);
+			m_input_channels->Disable();
+			m_input_channels->SetToolTip(reason);
+		}
 	}
 
 	{

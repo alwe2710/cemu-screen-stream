@@ -2,6 +2,7 @@
 #include "input/InputManager.h"
 #include "audio/IAudioInputAPI.h"
 #include "config/CemuConfig.h"
+#include "Cemu/finlinkStream/WiiuGamepadStream.h"
 
 enum class MIC_RESULT
 {
@@ -148,23 +149,50 @@ void micExport_MICInit(PPCInterpreter_t* hCPU)
 	std::unique_lock lock(g_audioInputMutex);
 	if (!g_inputAudio)
 	{
+		IAudioInputAPI::AudioInputAPI audio_api = IAudioInputAPI::Cubeb;
+		IAudioInputAPI::DeviceDescriptionPtr device_description;
+
+		// Whenever finlink GamePad streaming is enabled (not just while a
+		// client happens to be connected -- g_wiiuGamepadStream is
+		// non-null for the whole session once the feature is turned on,
+		// see MainWindow.cpp), the mic is forced to the Finlink Remote
+		// Microphone device, ignoring config.input_device entirely: a
+		// locally-selected mic would silently never receive any audio
+		// once a client connects and SubmitGamepadAudio()-style output
+		// forwarding takes over the GamePad's other I/O, so leaving the
+		// local device "selected" but effectively dead is more confusing
+		// than forcing the one device that actually works here (matches
+		// ax_out.cpp's AIInitDRCDMA(), which forces GamePad audio output
+		// to finlink the same way, and GeneralSettings2.cpp's UI grays out
+		// the mic device combo box under the same condition).
+		if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+		{
+			auto devices = IAudioInputAPI::GetDevices(IAudioInputAPI::Finlink);
+			if (!devices.empty())
+			{
+				audio_api = IAudioInputAPI::Finlink;
+				device_description = devices.front();
+			}
+		}
+
 		// Search every available input API for a device matching the
 		// configured identifier (rather than assuming Cubeb) -- lets
 		// config.input_device also resolve to the Finlink Remote Microphone
 		// device (see FinlinkInputAPI.h), not just a real Cubeb device.
-		IAudioInputAPI::AudioInputAPI audio_api = IAudioInputAPI::Cubeb;
-		IAudioInputAPI::DeviceDescriptionPtr device_description;
-		for (uint32 api = 0; api < IAudioInputAPI::AudioInputAPIEnd; api++)
+		if (!device_description)
 		{
-			if (!IAudioInputAPI::IsAudioInputAPIAvailable((IAudioInputAPI::AudioInputAPI)api))
-				continue;
-			auto devices = IAudioInputAPI::GetDevices((IAudioInputAPI::AudioInputAPI)api);
-			const auto it = std::find_if(devices.begin(), devices.end(), [&config](const auto& d) {return d->GetIdentifier() == config.input_device; });
-			if (it != devices.end())
+			for (uint32 api = 0; api < IAudioInputAPI::AudioInputAPIEnd; api++)
 			{
-				audio_api = (IAudioInputAPI::AudioInputAPI)api;
-				device_description = *it;
-				break;
+				if (!IAudioInputAPI::IsAudioInputAPIAvailable((IAudioInputAPI::AudioInputAPI)api))
+					continue;
+				auto devices = IAudioInputAPI::GetDevices((IAudioInputAPI::AudioInputAPI)api);
+				const auto it = std::find_if(devices.begin(), devices.end(), [&config](const auto& d) {return d->GetIdentifier() == config.input_device; });
+				if (it != devices.end())
+				{
+					audio_api = (IAudioInputAPI::AudioInputAPI)api;
+					device_description = *it;
+					break;
+				}
 			}
 		}
 
