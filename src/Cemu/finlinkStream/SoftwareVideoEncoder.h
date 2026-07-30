@@ -43,6 +43,16 @@ public:
 	// mode for this session rather than crash.
 	bool IsValid() const { return m_encoderHandle != nullptr; }
 
+	// The actual coded picture size the bitstream is encoded at -- may
+	// exceed the constructor's width/height (854x480 rounds up to
+	// 864x480), see m_codedWidth's own comment. SendVideoFrame() must send
+	// THIS, not the display width/height, in the video message header
+	// that accompanies an H264/H265 frame, since it's what the bitstream
+	// actually describes and what the client's decoder needs to configure
+	// against.
+	uint32_t CodedWidth() const { return m_codedWidth; }
+	uint32_t CodedHeight() const { return m_codedHeight; }
+
 	// Encodes one RGBA8 frame (width*height*4 bytes, same layout
 	// WiiuGamepadStream's m_latestFrameRgba already uses) into outNals --
 	// an Annex-B byte stream (one or more NAL units, start-code prefixed),
@@ -60,6 +70,21 @@ private:
 	VideoCodec m_codec;
 	uint32_t m_width;
 	uint32_t m_height;
+	// Both H.264 and H.265 code pictures in fixed macroblock/CTU blocks
+	// (16 pixels for H.264; also 16 here for simplicity on the H.265 side,
+	// a safe common denominator even though HEVC's CTUs can be larger) --
+	// a coded dimension that isn't a multiple of that has to be padded
+	// internally and cropped back out via the bitstream's SPS conformance
+	// window before display. That crop step is exactly where at least one
+	// real hardware decoder has been observed to go wrong for 854 (not a
+	// multiple of 16): the padding columns leak into the visible picture
+	// as a distorted/torn-looking right edge. Padding up to a 16-aligned
+	// size ourselves and never asking any decoder to crop anything (the
+	// client just displays the full padded picture, a ~1% edge-replicated
+	// sliver at most) sidesteps that class of decoder bug entirely, at
+	// the cost of never being able to rely on the codec's own cropping.
+	uint32_t m_codedWidth;
+	uint32_t m_codedHeight;
 	uint32_t m_fps;
 	// Every Nth frame (see docs/protocol.md's "Keyframe discipline") is
 	// forced as a keyframe regardless of what the encoder's own rate

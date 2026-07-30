@@ -104,11 +104,17 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 		if (nals.empty())
 			return true; // Encoder produced no output yet (internal buffering) -- nothing to send.
 
+		// Coded (padded, macroblock/CTU-aligned) dimensions, not the raw
+		// display width/height -- see SoftwareVideoEncoder::CodedWidth()'s
+		// own comment: the bitstream is encoded at this size, and at least
+		// one real hardware decoder has been observed to distort the
+		// picture if told to crop a non-macroblock-aligned SPS conformance
+		// window, so nothing ever asks a decoder to crop here at all.
 		std::vector<uint8_t> message;
 		message.reserve(10 + nals.size());
 		message.push_back((uint8_t)FINLINK_MSG_VIDEO);
-		AppendU32LE(message, (uint32_t)width);
-		AppendU32LE(message, (uint32_t)height);
+		AppendU32LE(message, videoEncoder->CodedWidth());
+		AppendU32LE(message, videoEncoder->CodedHeight());
 		message.push_back(videoMode == "h264" ? FINLINK_VIDEO_FORMAT_H264 : FINLINK_VIDEO_FORMAT_H265);
 		message.insert(message.end(), nals.begin(), nals.end());
 		return SendWebSocketBinaryFrame(fd, message, stop);
