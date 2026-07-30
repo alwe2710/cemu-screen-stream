@@ -137,13 +137,20 @@ inline bool IsWebSocketUpgradeRequest(const HttpRequest& request)
 }
 
 // Sends `size` bytes on a non-blocking socket, retrying on would-block.
-// Bounded to a few seconds total so a stalled peer can't block this thread
-// forever; `stop` is checked on every retry.
+// Bounded so a stalled peer can't block this thread forever; `stop` is
+// checked on every retry. 3 seconds turned out too tight in practice: a
+// routine Wi-Fi hiccup (brief congestion, a roam between APs) can leave a
+// send still buffered past that point even though the peer is still very
+// much alive, and hitting the deadline kills the whole session (the client
+// has to fully reconnect) rather than just this one frame arriving late --
+// 10 seconds absorbs that without meaningfully changing behavior for an
+// actually-dead peer, which was never going to un-stall in the next 7
+// seconds either.
 inline bool SendAllBytes(SOCKET fd, const void* data, size_t size, const std::atomic_bool& stop)
 {
 	const auto* bytes = static_cast<const unsigned char*>(data);
 	size_t sentTotal = 0;
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 	while (sentTotal < size)
 	{
 		if (stop || std::chrono::steady_clock::now() > deadline)
