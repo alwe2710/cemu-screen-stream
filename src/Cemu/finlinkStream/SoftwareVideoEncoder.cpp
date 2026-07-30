@@ -34,6 +34,19 @@ inline uint32_t RoundUpTo16(uint32_t value)
 // to reason about while tuning.
 constexpr int kTargetBitrateKbps = 4000;
 
+// VBV buffer size, deliberately much smaller than kTargetBitrateKbps (a
+// full 1-second buffer): the periodic ~3s forced keyframes (see docs/
+// protocol.md's "Keyframe discipline") are far bigger than an average
+// frame, and a full-second VBV buffer legally lets the encoder dump an
+// entire second's bitrate budget into one of them -- a burst the network/
+// decoder still has to absorb all at once, which showed up as a
+// backlog recurring in lockstep with the keyframe interval (see
+// jni_bridge.c's "finlink video decode backlog" diagnostic). A ~125ms
+// buffer (2-3 frame periods at 20fps) instead forces the rate controller
+// to keep even keyframes close to the average frame size, trading a
+// slightly softer keyframe for never spiking the instantaneous rate.
+constexpr int kVbvBufferKbits = 500;
+
 }
 
 SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uint32_t height, uint32_t fps)
@@ -80,7 +93,7 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		param.rc.i_rc_method = X264_RC_ABR;
 		param.rc.i_bitrate = kTargetBitrateKbps;
 		param.rc.i_vbv_max_bitrate = kTargetBitrateKbps;
-		param.rc.i_vbv_buffer_size = kTargetBitrateKbps;
+		param.rc.i_vbv_buffer_size = kVbvBufferKbits;
 		if (x264_param_apply_profile(&param, "main") != 0)
 			return;
 
@@ -104,7 +117,7 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		param->rc.rateControlMode = X265_RC_ABR;
 		param->rc.bitrate = kTargetBitrateKbps;
 		param->rc.vbvMaxBitrate = kTargetBitrateKbps;
-		param->rc.vbvBufferSize = kTargetBitrateKbps;
+		param->rc.vbvBufferSize = kVbvBufferKbits;
 
 		x265_encoder* encoder = x265_encoder_open(param);
 		x265_param_free(param);
