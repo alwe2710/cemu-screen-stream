@@ -4,6 +4,7 @@
 #include <cstring>
 #include <sstream>
 
+#include "finlink/handshake.h"
 #include "finlink/json.h"
 
 namespace Cemu::FinlinkStream
@@ -119,6 +120,11 @@ std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload)
 	HandshakeAck ack;
 	ack.protocolVersion = (int)finlink_json_get_number(text, versionSpan);
 	ack.requestedSlot = (int)finlink_json_get_number(text, slotSpan);
+
+	char videoMode[FINLINK_VIDEO_MODE_LEN];
+	if (finlink_json_get_string(text, finlink_json_find_member(text, obj.start, obj.end, "video_mode"), videoMode, sizeof(videoMode)) != (size_t)-1
+		&& strcmp(videoMode, "legacy") == 0)
+		ack.videoMode = "legacy";
 	return ack;
 }
 

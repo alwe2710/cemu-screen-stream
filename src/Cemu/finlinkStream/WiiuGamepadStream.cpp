@@ -5,6 +5,7 @@
 #include <array>
 #include <cstring>
 
+#include "finlink/deflate.h"
 #include "finlink/protocol.h"
 #include "finlink/video_encode.h"
 #include "Beacon.h"
@@ -82,11 +83,32 @@ void ConvertRgba8ToRgb565(const uint8_t* rgba8, int width, int height, std::vect
 // Returns false only on a real socket error (caller should treat the
 // session as dead); a deduped ("nothing changed") frame still returns true
 // having sent nothing.
+// legacyVideo comes from the client's hello_ack.video_mode (FinlinkMessages.h's
+// HandshakeAck) -- "legacy" always sends a full, non-tiled, non-deduped
+// frame (the original, pre-TILES behavior), kept as a user-selectable
+// fallback; anything else uses the TILES delta-encoding + dedup path below.
 bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int height,
-                    std::vector<uint8_t>& lastSentRgb565, const std::atomic_bool& stop)
+                    std::vector<uint8_t>& lastSentRgb565, bool legacyVideo, const std::atomic_bool& stop)
 {
 	std::vector<uint8_t> rgb565;
 	ConvertRgba8ToRgb565(rgba8.data(), width, height, rgb565);
+
+	if (legacyVideo)
+	{
+		std::vector<uint8_t> compressed(finlink_deflate_max_size(rgb565.size()));
+		size_t compressedSize = 0;
+		if (finlink_deflate_raw(rgb565.data(), rgb565.size(), compressed.data(), compressed.size(), &compressedSize) != FINLINK_DEFLATE_OK)
+			return true; // compressed is sized correctly above, so this shouldn't happen -- skip this frame rather than kill the session over it.
+
+		std::vector<uint8_t> message;
+		message.reserve(10 + compressedSize);
+		message.push_back((uint8_t)FINLINK_MSG_VIDEO);
+		AppendU32LE(message, (uint32_t)width);
+		AppendU32LE(message, (uint32_t)height);
+		message.push_back(0); // format=0: full frame, no INDEXED/TILES bits set.
+		message.insert(message.end(), compressed.begin(), compressed.begin() + compressedSize);
+		return SendWebSocketBinaryFrame(fd, message, stop);
+	}
 
 	// Guards against a stale previous-frame buffer from a different
 	// resolution (not expected for this fixed-854x480 stream type, but
@@ -326,7 +348,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 		return;
 	}
 
-	RunSession(fd);
+	RunSession(fd, ack->videoMode == "legacy");
 
 	m_streaming = false;
 	m_inputActive = false;
@@ -343,7 +365,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	closesocket(fd);
 }
 
-void WiiuGamepadStream::RunSession(SOCKET fd)
+void WiiuGamepadStream::RunSession(SOCKET fd, bool legacyVideo)
 {
 	m_streaming = true;
 	m_inputActive = true;
@@ -381,7 +403,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 		}
 		if (!frameCopy.empty())
 		{
-			if (!SendVideoFrame(fd, frameCopy, width, height, lastSentFrameRgb565, m_stop))
+			if (!SendVideoFrame(fd, frameCopy, width, height, lastSentFrameRgb565, legacyVideo, m_stop))
 				return;
 			lastSentFrameId = currentId;
 		}
