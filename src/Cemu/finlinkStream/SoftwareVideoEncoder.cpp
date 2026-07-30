@@ -25,6 +25,15 @@ inline uint32_t RoundUpTo16(uint32_t value)
 	return (value + 15u) & ~15u;
 }
 
+// Deliberately conservative for 854x480 @ ~20fps -- real streaming
+// guidelines put good-quality 480p well under this, leaving margin under
+// typical home Wi-Fi throughput so the encoder itself never demands more
+// bandwidth than the link can sustain in real time (see this file's rate
+// control comment). Both codecs share one value for now; H.265's better
+// efficiency means it could go lower, but starting equal keeps this easy
+// to reason about while tuning.
+constexpr int kTargetBitrateKbps = 4000;
+
 }
 
 SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uint32_t height, uint32_t fps)
@@ -57,8 +66,21 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		// not only session start.
 		param.b_repeat_headers = 1;
 		param.b_annexb = 1;
-		param.rc.i_rc_method = X264_RC_CRF;
-		param.rc.f_rf_constant = 23.0f;
+		// Capped bitrate (ABR + a VBV ceiling at the same rate), not CRF:
+		// CRF targets a *quality* level with no bound on the resulting
+		// bitrate, so a busy/fast-changing scene (real gameplay, vs. a
+		// mostly-static menu) can spike well past what a real Wi-Fi link
+		// sustains in real time -- data then queues up and arrives in
+		// bursts, which is exactly the decode-side backlog (see
+		// jni_bridge.c's "finlink video decode backlog" diagnostic)
+		// observed specifically once gameplay -- not simpler screens --
+		// started rendering. kTargetBitrateKbps is deliberately
+		// conservative for this resolution/frame rate, leaving real margin
+		// under typical home Wi-Fi throughput.
+		param.rc.i_rc_method = X264_RC_ABR;
+		param.rc.i_bitrate = kTargetBitrateKbps;
+		param.rc.i_vbv_max_bitrate = kTargetBitrateKbps;
+		param.rc.i_vbv_buffer_size = kTargetBitrateKbps;
 		if (x264_param_apply_profile(&param, "main") != 0)
 			return;
 
@@ -78,8 +100,11 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		param->keyframeMax = (int)m_keyframeInterval;
 		param->bRepeatHeaders = 1;
 		param->internalCsp = X265_CSP_I420;
-		param->rc.rateControlMode = X265_RC_CRF;
-		param->rc.rfConstant = 28.0;
+		// Same reasoning as the H.264 branch above: capped bitrate, not CRF.
+		param->rc.rateControlMode = X265_RC_ABR;
+		param->rc.bitrate = kTargetBitrateKbps;
+		param->rc.vbvMaxBitrate = kTargetBitrateKbps;
+		param->rc.vbvBufferSize = kTargetBitrateKbps;
 
 		x265_encoder* encoder = x265_encoder_open(param);
 		x265_param_free(param);
