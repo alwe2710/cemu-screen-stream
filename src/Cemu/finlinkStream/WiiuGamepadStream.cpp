@@ -95,7 +95,7 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 	if (lastSentRgb565.size() != rgb565.size())
 		lastSentRgb565.clear();
 
-	std::vector<uint8_t> scratch(finlink_video_max_inflated_size((uint32_t)width, (uint32_t)height));
+	std::vector<uint8_t> scratch(finlink_video_encode_scratch_size((uint32_t)width, (uint32_t)height));
 	std::vector<uint8_t> compressed(finlink_video_encode_max_size((uint32_t)width, (uint32_t)height));
 	size_t compressedSize = 0;
 	uint8_t format = 0;
