@@ -8,6 +8,8 @@ add_library(CemuComponents
   finlinkStream/FinlinkMessages.cpp
   finlinkStream/FinlinkMessages.h
   finlinkStream/FinlinkWebSocket.h
+  finlinkStream/SoftwareVideoEncoder.cpp
+  finlinkStream/SoftwareVideoEncoder.h
   finlinkStream/WiiuGamepadStream.cpp
   finlinkStream/WiiuGamepadStream.h
   Logging/CemuDebugLogging.h
@@ -57,6 +59,8 @@ target_link_libraries(CemuComponents PRIVATE
   CemuGui
   finlink_core
   OpenSSL::Crypto
+  x264::x264
+  x265::x265
 )
 
 # PUBLIC because fmt/format.h is included in ExpressionParser/ExpressionParser.h

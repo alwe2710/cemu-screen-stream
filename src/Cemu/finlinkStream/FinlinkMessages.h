@@ -43,10 +43,11 @@ struct HandshakeAck
 {
 	int protocolVersion;
 	int requestedSlot;
-	// Client's requested video encoding ("tiles" or "legacy", see
-	// docs/protocol.md's hello_ack.video_mode) -- defaults to "tiles" when
-	// the client didn't send the field at all (an old client, or one that
-	// never picked a non-default mode).
+	// Client's requested video encoding ("tiles", "legacy", "h264", or
+	// "h265", see docs/protocol.md's hello_ack.video_mode) -- defaults to
+	// "tiles" when the client didn't send the field at all (an old
+	// client, or one that never picked a non-default mode) or sent a
+	// value this server doesn't recognize.
 	std::string videoMode = "tiles";
 };
 

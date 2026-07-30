@@ -162,6 +162,8 @@ find_package(OpenSSL COMPONENTS Crypto SSL REQUIRED)
 find_package(glm REQUIRED)
 find_package(fmt 12.1 REQUIRED)
 find_package(PNG REQUIRED)
+find_package(x264 REQUIRED)
+find_package(x265 REQUIRED)
 
 if(ENABLE_SDL)
 	find_package(SDL3 REQUIRED CONFIG REQUIRED COMPONENTS SDL3)

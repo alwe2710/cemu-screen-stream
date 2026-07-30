@@ -132,7 +132,7 @@ public:
 private:
 	void AcceptLoop();
 	void ServeConnection(SOCKET fd);
-	void RunSession(SOCKET fd, bool legacyVideo);
+	void RunSession(SOCKET fd, const std::string& videoMode);
 
 	const uint16_t m_port;
 	SOCKET m_listenSocket;

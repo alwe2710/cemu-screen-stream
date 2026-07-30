@@ -11,6 +11,7 @@
 #include "Beacon.h"
 #include "FinlinkMessages.h"
 #include "FinlinkWebSocket.h"
+#include "SoftwareVideoEncoder.h"
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 
@@ -83,17 +84,40 @@ void ConvertRgba8ToRgb565(const uint8_t* rgba8, int width, int height, std::vect
 // Returns false only on a real socket error (caller should treat the
 // session as dead); a deduped ("nothing changed") frame still returns true
 // having sent nothing.
-// legacyVideo comes from the client's hello_ack.video_mode (FinlinkMessages.h's
-// HandshakeAck) -- "legacy" always sends a full, non-tiled, non-deduped
-// frame (the original, pre-TILES behavior), kept as a user-selectable
-// fallback; anything else uses the TILES delta-encoding + dedup path below.
+// videoMode comes from the client's hello_ack.video_mode (FinlinkMessages.h's
+// HandshakeAck): "h264"/"h265" use videoEncoder (RunSession's session-local
+// SoftwareVideoEncoder, non-null and IsValid() only when that mode was
+// actually negotiated and construction succeeded -- falls through to the
+// TILES path below otherwise, a safe default rather than sending nothing);
+// "legacy" always sends a full, non-tiled, non-deduped frame (the original,
+// pre-TILES behavior, kept as a user-selectable fallback); anything else
+// uses the TILES delta-encoding + dedup path.
 bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int height,
-                    std::vector<uint8_t>& lastSentRgb565, bool legacyVideo, const std::atomic_bool& stop)
+                    std::vector<uint8_t>& lastSentRgb565, const std::string& videoMode,
+                    SoftwareVideoEncoder* videoEncoder, const std::atomic_bool& stop)
 {
+	if ((videoMode == "h264" || videoMode == "h265") && videoEncoder && videoEncoder->IsValid())
+	{
+		std::vector<uint8_t> nals;
+		if (!videoEncoder->EncodeFrame(rgba8.data(), nals))
+			return true; // Real encoder error -- skip this frame rather than kill the session over it.
+		if (nals.empty())
+			return true; // Encoder produced no output yet (internal buffering) -- nothing to send.
+
+		std::vector<uint8_t> message;
+		message.reserve(10 + nals.size());
+		message.push_back((uint8_t)FINLINK_MSG_VIDEO);
+		AppendU32LE(message, (uint32_t)width);
+		AppendU32LE(message, (uint32_t)height);
+		message.push_back(videoMode == "h264" ? FINLINK_VIDEO_FORMAT_H264 : FINLINK_VIDEO_FORMAT_H265);
+		message.insert(message.end(), nals.begin(), nals.end());
+		return SendWebSocketBinaryFrame(fd, message, stop);
+	}
+
 	std::vector<uint8_t> rgb565;
 	ConvertRgba8ToRgb565(rgba8.data(), width, height, rgb565);
 
-	if (legacyVideo)
+	if (videoMode == "legacy")
 	{
 		std::vector<uint8_t> compressed(finlink_deflate_max_size(rgb565.size()));
 		size_t compressedSize = 0;
@@ -348,7 +372,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 		return;
 	}
 
-	RunSession(fd, ack->videoMode == "legacy");
+	RunSession(fd, ack->videoMode);
 
 	m_streaming = false;
 	m_inputActive = false;
@@ -365,7 +389,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	closesocket(fd);
 }
 
-void WiiuGamepadStream::RunSession(SOCKET fd, bool legacyVideo)
+void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 {
 	m_streaming = true;
 	m_inputActive = true;
@@ -376,6 +400,19 @@ void WiiuGamepadStream::RunSession(SOCKET fd, bool legacyVideo)
 	// the start of every new session rather than persisting across
 	// reconnects.
 	std::vector<uint8_t> lastSentFrameRgb565;
+	// Session-local H.264/H265 encoder (only constructed for those two
+	// modes) -- fresh per session, same reasoning as lastSentFrameRgb565
+	// above: encoder/decoder reference-frame state must never cross
+	// sessions. Effective fps is this stream's real, throttled capture
+	// rate (kMinCaptureInterval), not the console's nominal output rate
+	// (kStreamFps) -- see SoftwareVideoEncoder's own constructor comment.
+	std::unique_ptr<SoftwareVideoEncoder> videoEncoder;
+	if (videoMode == "h264" || videoMode == "h265")
+	{
+		const uint32_t fps = (uint32_t)(1000 / kMinCaptureInterval.count());
+		videoEncoder = std::make_unique<SoftwareVideoEncoder>(
+			videoMode == "h264" ? VideoCodec::H264 : VideoCodec::H265, kStreamWidth, kStreamHeight, fps);
+	}
 	// Edge-detection for the mic-enable signal -- session-local (not a
 	// member), same reasoning as lastSentFrameId above. Starts at "not
 	// wanted" so a session that begins with a mic already wanted (the game
@@ -403,7 +440,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd, bool legacyVideo)
 		}
 		if (!frameCopy.empty())
 		{
-			if (!SendVideoFrame(fd, frameCopy, width, height, lastSentFrameRgb565, legacyVideo, m_stop))
+			if (!SendVideoFrame(fd, frameCopy, width, height, lastSentFrameRgb565, videoMode, videoEncoder.get(), m_stop))
 				return;
 			lastSentFrameId = currentId;
 		}

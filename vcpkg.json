@@ -67,7 +67,9 @@
         "zip"
       ]
     },
-    "libusb"
+    "libusb",
+    "x264",
+    "x265"
   ],
   "overrides": [
     {
