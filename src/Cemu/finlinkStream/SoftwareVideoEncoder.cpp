@@ -94,7 +94,19 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		param.rc.i_bitrate = kTargetBitrateKbps;
 		param.rc.i_vbv_max_bitrate = kTargetBitrateKbps;
 		param.rc.i_vbv_buffer_size = kVbvBufferKbits;
-		if (x264_param_apply_profile(&param, "main") != 0)
+		// Baseline (CAVLC entropy coding), not Main (CABAC): the exact
+		// same bitstream that renders correctly on the Android emulator's
+		// software decoder showed real, persistent tearing/distortion on
+		// a real device's hardware decoder -- pointing at a decoder-side
+		// incompatibility rather than a bug in the bitstream itself, and
+		// CABAC support is a common source of exactly this kind of real
+		// hardware decoder quirk. Baseline is the most universally
+		// hardware-compatible profile (also why it's the standard choice
+		// for WebRTC and similar real-time paths); zerolatency tune
+		// already disables B-frames, so the two profiles differ mainly in
+		// entropy coding here, at some compression-efficiency cost that
+		// the bitrate cap above already leaves headroom for.
+		if (x264_param_apply_profile(&param, "baseline") != 0)
 			return;
 
 		x264_t* encoder = x264_encoder_open(&param);
