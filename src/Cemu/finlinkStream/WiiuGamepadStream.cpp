@@ -99,10 +99,24 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 	if ((videoMode == "h264" || videoMode == "h265") && videoEncoder && videoEncoder->IsValid())
 	{
 		std::vector<uint8_t> nals;
-		if (!videoEncoder->EncodeFrame(rgba8.data(), nals))
+		// Temporary diagnostic timing (see the "verzögert nach dem Intro"
+		// investigation) -- logs only when either half takes long enough to
+		// plausibly explain visible lag, so this doesn't spam the log on
+		// the common fast case. Encode is CPU-bound (competes with Cemu's
+		// own emulation for the same cores); send is bound by the actual
+		// Wi-Fi link. Remove once the bottleneck is confirmed.
+		const auto encodeStart = std::chrono::steady_clock::now();
+		const bool encodeOk = videoEncoder->EncodeFrame(rgba8.data(), nals);
+		const auto encodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - encodeStart).count();
+		if (!encodeOk)
 			return true; // Real encoder error -- skip this frame rather than kill the session over it.
 		if (nals.empty())
+		{
+			if (encodeMs > 20)
+				cemuLog_log(LogType::Force, fmt::format("finlink {} encode took {}ms (no output yet)", videoMode, encodeMs));
 			return true; // Encoder produced no output yet (internal buffering) -- nothing to send.
+		}
 
 		// Coded (padded, macroblock/CTU-aligned) dimensions, not the raw
 		// display width/height -- see SoftwareVideoEncoder::CodedWidth()'s
@@ -117,7 +131,14 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 		AppendU32LE(message, videoEncoder->CodedHeight());
 		message.push_back(videoMode == "h264" ? FINLINK_VIDEO_FORMAT_H264 : FINLINK_VIDEO_FORMAT_H265);
 		message.insert(message.end(), nals.begin(), nals.end());
-		return SendWebSocketBinaryFrame(fd, message, stop);
+
+		const auto sendStart = std::chrono::steady_clock::now();
+		const bool sendOk = SendWebSocketBinaryFrame(fd, message, stop);
+		const auto sendMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - sendStart).count();
+		if (encodeMs > 20 || sendMs > 20)
+			cemuLog_log(LogType::Force, fmt::format("finlink {} frame: {} bytes, encode {}ms, send {}ms", videoMode, nals.size(), encodeMs, sendMs));
+		return sendOk;
 	}
 
 	std::vector<uint8_t> rgb565;
