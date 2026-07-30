@@ -5,8 +5,8 @@
 #include <array>
 #include <cstring>
 
-#include "finlink/deflate.h"
 #include "finlink/protocol.h"
+#include "finlink/video_encode.h"
 #include "Beacon.h"
 #include "FinlinkMessages.h"
 #include "FinlinkWebSocket.h"
@@ -73,26 +73,56 @@ void ConvertRgba8ToRgb565(const uint8_t* rgba8, int width, int height, std::vect
 	}
 }
 
-bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int height, const std::atomic_bool& stop)
+// lastSentRgb565 is RunSession()'s own session-local "previous frame" state
+// (in/out) -- empty means no previous frame yet (this session's first
+// frame, or a resolution change), matching finlink_encode_video_frame()'s
+// previous_rgb565=NULL contract. Encodes via TILES delta + dedup against it
+// instead of always sending a full frame (see docs/protocol.md, "Frame
+// semantics (video dedup)" -- this is that behavior, actually implemented).
+// Returns false only on a real socket error (caller should treat the
+// session as dead); a deduped ("nothing changed") frame still returns true
+// having sent nothing.
+bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int height,
+                    std::vector<uint8_t>& lastSentRgb565, const std::atomic_bool& stop)
 {
 	std::vector<uint8_t> rgb565;
 	ConvertRgba8ToRgb565(rgba8.data(), width, height, rgb565);
 
-	std::vector<uint8_t> compressed(finlink_deflate_max_size(rgb565.size()));
+	// Guards against a stale previous-frame buffer from a different
+	// resolution (not expected for this fixed-854x480 stream type, but
+	// mismatched sizes would otherwise be undefined behavior for the tile
+	// diff below) -- treat it the same as "no previous frame yet".
+	if (lastSentRgb565.size() != rgb565.size())
+		lastSentRgb565.clear();
+
+	std::vector<uint8_t> scratch(finlink_video_max_inflated_size((uint32_t)width, (uint32_t)height));
+	std::vector<uint8_t> compressed(finlink_video_encode_max_size((uint32_t)width, (uint32_t)height));
 	size_t compressedSize = 0;
-	if (finlink_deflate_raw(rgb565.data(), rgb565.size(), compressed.data(), compressed.size(), &compressedSize) != FINLINK_DEFLATE_OK)
-		return false;
-	compressed.resize(compressedSize);
+	uint8_t format = 0;
+
+	const uint8_t* previous = lastSentRgb565.empty() ? nullptr : lastSentRgb565.data();
+	finlink_encode_status status = finlink_encode_video_frame(
+		rgb565.data(), previous, (uint32_t)width, (uint32_t)height, scratch.data(), scratch.size(),
+		compressed.data(), compressed.size(), &compressedSize, &format);
+
+	if (status == FINLINK_ENCODE_UNCHANGED)
+		return true; // Pixel-identical to the last frame actually sent -- nothing to do.
+	if (status != FINLINK_ENCODE_OK)
+		return true; // scratch/compressed are sized correctly above, so this shouldn't happen -- skip this frame rather than kill the session over it.
 
 	std::vector<uint8_t> message;
-	message.reserve(10 + compressed.size());
+	message.reserve(10 + compressedSize);
 	message.push_back((uint8_t)FINLINK_MSG_VIDEO);
 	AppendU32LE(message, (uint32_t)width);
 	AppendU32LE(message, (uint32_t)height);
-	message.push_back(0); // format = 0: full frame, raw (non-indexed, non-tiled) RGB565.
-	message.insert(message.end(), compressed.begin(), compressed.end());
+	message.push_back(format);
+	message.insert(message.end(), compressed.begin(), compressed.begin() + compressedSize);
 
-	return SendWebSocketBinaryFrame(fd, message, stop);
+	if (!SendWebSocketBinaryFrame(fd, message, stop))
+		return false;
+
+	lastSentRgb565 = std::move(rgb565);
+	return true;
 }
 
 }
@@ -318,6 +348,12 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 	m_streaming = true;
 	m_inputActive = true;
 	uint64_t lastSentFrameId = 0;
+	// TILES-diff/dedup state for SendVideoFrame() -- session-local (not a
+	// member), same reasoning as the mic-enable edge-detection below: reset
+	// to empty (meaning "no previous frame", forcing a fresh keyframe) at
+	// the start of every new session rather than persisting across
+	// reconnects.
+	std::vector<uint8_t> lastSentFrameRgb565;
 	// Edge-detection for the mic-enable signal -- session-local (not a
 	// member), same reasoning as lastSentFrameId above. Starts at "not
 	// wanted" so a session that begins with a mic already wanted (the game
@@ -345,7 +381,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd)
 		}
 		if (!frameCopy.empty())
 		{
-			if (!SendVideoFrame(fd, frameCopy, width, height, m_stop))
+			if (!SendVideoFrame(fd, frameCopy, width, height, lastSentFrameRgb565, m_stop))
 				return;
 			lastSentFrameId = currentId;
 		}
