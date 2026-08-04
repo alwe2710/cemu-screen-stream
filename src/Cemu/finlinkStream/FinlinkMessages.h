@@ -65,7 +65,7 @@ std::string BuildHelloMessage();
 // HandshakeErrorCode::MalformedRequest.
 std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload);
 
-std::string BuildSessionReadyMessage();
+std::string BuildSessionReadyMessage(const std::string& videoMode);
 
 std::string BuildHandshakeErrorMessage(HandshakeErrorCode code, const std::string& detail);
 

@@ -392,7 +392,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 		return;
 	}
 
-	if (!SendWebSocketTextFrame(fd, BuildSessionReadyMessage(), m_stop))
+	if (!SendWebSocketTextFrame(fd, BuildSessionReadyMessage(ack->videoMode), m_stop))
 	{
 		m_active = false;
 		closesocket(fd);

@@ -128,11 +128,25 @@ std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload)
 	return ack;
 }
 
-std::string BuildSessionReadyMessage()
+std::string BuildSessionReadyMessage(const std::string& videoMode)
 {
 	// No real video/audio negotiation for this stream type: fixed 854x480
 	// and 48kHz/stereo, no redirect (single slot) -- same simplification as
 	// the azahar/melonDS implementations of the same feature.
+	//
+	// videoMode is ack->videoMode, i.e. exactly what RunSession() will be
+	// called with right after this message is sent (WiiuGamepadStream.cpp) --
+	// reported here as the session's committed choice per docs/protocol.md's
+	// "Video-mode fallback". Known gap, deliberately not fixed in this pass:
+	// for h264/h265 this is reported before the SoftwareVideoEncoder is
+	// actually constructed (RunSession does that), so if construction fails
+	// the frames that follow silently fall back to TILES per-frame
+	// (SendVideoFrame) while session_ready already claimed h264/h265. Fine
+	// for now since encoder construction failing is not a case that's been
+	// observed in practice; hoisting construction earlier so this can be
+	// honest even in that case is a separate follow-up, not required for
+	// the fallback-reporting feature itself to work correctly in the
+	// common case (server doesn't support the mode at all).
 	std::ostringstream out;
 	out.precision(10);
 	out << "{"
@@ -143,7 +157,8 @@ std::string BuildSessionReadyMessage()
 		<< "\"height\":" << kStreamHeight << ","
 		<< "\"fps\":" << kStreamFps
 		<< "},"
-		<< "\"audio\":{\"sample_rate\":48000,\"channels\":2}"
+		<< "\"audio\":{\"sample_rate\":48000,\"channels\":2},"
+		<< "\"video_mode\":\"" << videoMode << "\""
 		<< "}";
 	return out.str();
 }
