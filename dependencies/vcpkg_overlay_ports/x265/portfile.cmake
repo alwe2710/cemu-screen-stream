@@ -31,6 +31,20 @@ if(VCPKG_TARGET_ARCHITECTURE STREQUAL "x86" OR VCPKG_TARGET_ARCHITECTURE STREQUA
     endif()
 elseif(VCPKG_TARGET_IS_WINDOWS)
     list(APPEND OPTIONS "-DENABLE_ASSEMBLY=OFF")
+elseif(VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64")
+    # x265's own source/CMakeLists.txt hardcodes
+    # AARCH64_SVE2_FLAG="-march=armv9-a+i8mm+sve2" for its SVE2 assembly
+    # files (mc-a-sve2.S, pixel-util-sve2.S, ssd-a-sve2.S, sao-prim-sve2.cpp)
+    # with no compiler-version guard at all -- confirmed on GitHub's
+    # ubuntu-24.04-arm runner: `cc1: error: unknown value
+    # 'armv9-a+i8mm+sve2' for '-march'`, i.e. that GCC's -march parser
+    # doesn't (yet) accept this exact extension combination, even though
+    # SVE2/armv9-a support individually may exist. ENABLE_SVE2 is x265's
+    # own upstream toggle for exactly this (source/CMakeLists.txt, defaults
+    # ON) -- turning it off keeps NEON/NEON_DOTPROD/NEON_I8MM/SVE (each a
+    # separately gated, less exotic -march string) intact, only dropping
+    # the one optimization tier that doesn't build here.
+    list(APPEND OPTIONS "-DENABLE_SVE2=OFF")
 endif()
 
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "dynamic" ENABLE_SHARED)
