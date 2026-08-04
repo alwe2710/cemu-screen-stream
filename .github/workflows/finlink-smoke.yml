@@ -57,6 +57,20 @@ jobs:
           fi
           exit $status
 
+  dual-audio-isolation:
+    # Static/structural, not a build -- see tools/check_dual_audio_isolation.py's
+    # own docstring for why this is the right way to prove the
+    # "dual-audio-server" test category property (only GamePad audio ever
+    # reaches finlink, TV audio plays locally untouched) without a full
+    # ROM-booted Wii U title in CI.
+    name: dual-audio-server isolation (ax_out.cpp static check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: false
+      - run: python3 tools/check_dual_audio_isolation.py
+
   finlink-messages-test:
     # Deliberately fast/separate from full-build below: FinlinkMessages.cpp
     # only needs finlink_core's json.c/handshake.c (see tests/CMakeLists.txt's
