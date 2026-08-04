@@ -1,0 +1,66 @@
+name: finlink smoke
+
+# Fork-owned workflow, deliberately separate from the upstream-inherited
+# build_check.yml/build.yml (which only trigger on push to `main` and PRs
+# -- this fork's actual work happens on `transcoding`, which they never
+# see) so future `git fetch upstream && merge` syncs from cemu-project/Cemu
+# don't collide with anything finlink-specific. Part of the finlink CI
+# pipeline's build-smoke stage; see finlink/docs/capabilities.md and the
+# 5-repo drift snapshot in the plan this came from.
+
+on:
+  push:
+    branches: [transcoding]
+  pull_request:
+    branches: [transcoding]
+  workflow_dispatch:
+
+jobs:
+  finlink-freshness:
+    name: dependencies/finlink freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: false # only need the gitlink SHA + .gitmodules, not an actual checkout
+
+      # Diagnostic only: reports drift, doesn't touch the submodule pin
+      # itself. Fails loudly (separate job, doesn't block full-build below)
+      # rather than a soft warning, since a silent one would be too easy to
+      # miss for a solo maintainer watching Actions on a fork.
+      - name: Compare pinned commit + tracked branch against canonical finlink
+        run: |
+          set -euo pipefail
+          # This fork's own work lives on transcoding, not .gitmodules'
+          # declared `branch = main` (see below) -- that's exactly the kind
+          # of drift this check exists to catch, so the comparison target
+          # is hardcoded to what SHOULD be tracked, not read back from
+          # .gitmodules itself.
+          EXPECTED_BRANCH="transcoding"
+
+          DECLARED_BRANCH="$(git config -f .gitmodules --get submodule.dependencies/finlink.branch || echo '(none)')"
+          PINNED_SHA="$(git ls-tree HEAD dependencies/finlink | awk '{print $3}')"
+          LATEST_SHA="$(git ls-remote https://github.com/alwe2710/finlink.git "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
+
+          echo "Pinned dependencies/finlink commit: $PINNED_SHA"
+          echo "Latest commit on finlink's $EXPECTED_BRANCH:  $LATEST_SHA"
+          echo ".gitmodules declared tracking branch: $DECLARED_BRANCH (expected: $EXPECTED_BRANCH)"
+
+          status=0
+          if [ "$DECLARED_BRANCH" != "$EXPECTED_BRANCH" ]; then
+            echo "::warning::.gitmodules declares tracking branch '$DECLARED_BRANCH' for dependencies/finlink, but this fork's actual work happens on '$EXPECTED_BRANCH' -- 'git submodule update --remote' would silently pull the wrong branch. Fix the 'branch =' line in .gitmodules."
+            status=1
+          fi
+          if [ "$PINNED_SHA" != "$LATEST_SHA" ]; then
+            echo "::warning::dependencies/finlink is pinned at $PINNED_SHA, which is behind finlink's $EXPECTED_BRANCH tip ($LATEST_SHA). Update with: git submodule update --remote dependencies/finlink && git add dependencies/finlink && git commit"
+            status=1
+          fi
+          exit $status
+
+  full-build:
+    name: full build (reuses the existing build.yml)
+    # Heavy multi-OS/arch build (see build.yml) -- runs on every push to
+    # transcoding now, not just PRs against main as build_check.yml alone
+    # would give it. Real CI minutes, by design (see the plan's "Ort:
+    # GitHub Actions in jedem Repo" decision).
+    uses: ./.github/workflows/build.yml
