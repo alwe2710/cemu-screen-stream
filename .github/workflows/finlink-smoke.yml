@@ -57,6 +57,25 @@ jobs:
           fi
           exit $status
 
+  finlink-messages-test:
+    # Deliberately fast/separate from full-build below: FinlinkMessages.cpp
+    # only needs finlink_core's json.c/handshake.c (see tests/CMakeLists.txt's
+    # own comment), not vcpkg or any of the rest of Cemu, so this doesn't
+    # need full-build's heavy dependency bootstrap at all.
+    name: FinlinkMessages.cpp unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true # only need dependencies/finlink, but recursive is simplest here
+      - name: Configure
+        run: cmake -S src/Cemu/finlinkStream/tests -B build/finlink_messages_test
+      - name: Build
+        run: cmake --build build/finlink_messages_test -j"$(nproc)"
+      - name: Test
+        working-directory: build/finlink_messages_test
+        run: ctest --output-on-failure
+
   full-build:
     name: full build (reuses the existing build.yml)
     # Heavy multi-OS/arch build (see build.yml) -- runs on every push to
