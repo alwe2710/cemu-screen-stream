@@ -150,7 +150,7 @@ inline bool SendAllBytes(SOCKET fd, const void* data, size_t size, const std::at
 {
 	const auto* bytes = static_cast<const unsigned char*>(data);
 	size_t sentTotal = 0;
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FINLINK_WS_SEND_TIMEOUT_MS);
 	while (sentTotal < size)
 	{
 		if (stop || std::chrono::steady_clock::now() > deadline)
