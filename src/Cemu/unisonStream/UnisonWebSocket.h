@@ -4,10 +4,10 @@
 // plain-HTTP upgrade request, computing Sec-WebSocket-Accept, sending
 // unmasked server->client frames, and receiving masked client->server
 // frames. Deliberately only the transport -- neither the app-level handshake
-// (FinlinkMessages.h) nor the Video/Input binary message formats
+// (UnisonMessages.h) nor the Video/Input binary message formats
 // (WiiuGamepadStream.cpp) live here.
 //
-// Same wire format as the finlink WebSocket transport already implemented in
+// Same wire format as the Unison WebSocket transport already implemented in
 // the sibling dolphin-gba-stream/azahar/melonds-screen-stream forks -- this
 // one is against Common/socket.h's cross-platform Berkeley sockets wrapper,
 // matching how src/Cafe/HW/Espresso/Debugger/GDBStub.cpp (the one other TCP
@@ -19,7 +19,7 @@
 #include "Cemu/ncrypto/ncrypto.h"
 
 #include <openssl/evp.h>
-#include "finlink/websocket.h"
+#include "unison/websocket.h"
 
 #include <algorithm>
 #include <array>
@@ -37,7 +37,7 @@
 #include <thread>
 #include <vector>
 
-namespace Cemu::FinlinkStream
+namespace Cemu::UnisonStream
 {
 
 struct HttpRequest
@@ -150,7 +150,7 @@ inline bool SendAllBytes(SOCKET fd, const void* data, size_t size, const std::at
 {
 	const auto* bytes = static_cast<const unsigned char*>(data);
 	size_t sentTotal = 0;
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(FINLINK_WS_SEND_TIMEOUT_MS);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(UNISON_WS_SEND_TIMEOUT_MS);
 	while (sentTotal < size)
 	{
 		if (stop || std::chrono::steady_clock::now() > deadline)
@@ -239,13 +239,13 @@ inline bool SendWebSocketTextFrame(SOCKET fd, const std::string& payload, const 
 
 struct ReceivedFrame
 {
-	finlink_ws_opcode opcode;
+	unison_ws_opcode opcode;
 	std::vector<uint8_t> payload;
 };
 
 // Tries to parse one client->server (masked) frame from the front of `buf`
-// via finlink_ws_parse_frame() (core/include/finlink/websocket.h, vendored
-// at dependencies/finlink -- its unmasking logic is generic despite being
+// via unison_ws_parse_frame() (core/include/unison/websocket.h, vendored
+// at dependencies/unison -- its unmasking logic is generic despite being
 // documented from a client's perspective, see that header's own comment),
 // consuming those bytes from `buf` on success. Returns nullopt (leaving
 // `buf` untouched) if there isn't a full frame yet; sets `*protocolError` if
@@ -256,11 +256,11 @@ inline std::optional<ReceivedFrame> TryParseOneFrame(std::vector<uint8_t>& buf, 
 	*protocolError = false;
 	if (buf.empty())
 		return std::nullopt;
-	finlink_ws_frame frame{};
-	auto status = finlink_ws_parse_frame(buf.data(), buf.size(), &frame);
-	if (status == FINLINK_WS_FRAME_INCOMPLETE)
+	unison_ws_frame frame{};
+	auto status = unison_ws_parse_frame(buf.data(), buf.size(), &frame);
+	if (status == UNISON_WS_FRAME_INCOMPLETE)
 		return std::nullopt;
-	if (status == FINLINK_WS_FRAME_ERR)
+	if (status == UNISON_WS_FRAME_ERR)
 	{
 		*protocolError = true;
 		buf.clear();
@@ -275,7 +275,7 @@ inline std::optional<ReceivedFrame> TryParseOneFrame(std::vector<uint8_t>& buf, 
 
 // Reads off a non-blocking, already-upgraded socket until one full
 // WebSocket frame has been received or `timeout` elapses. Used for the
-// app-level handshake (FinlinkMessages.h), where exactly one text frame
+// app-level handshake (UnisonMessages.h), where exactly one text frame
 // (hello_ack) is expected before any Video/Input binary frame.
 inline std::optional<ReceivedFrame> ReceiveOneWebSocketFrame(SOCKET fd, const std::atomic_bool& stop, std::chrono::milliseconds timeout)
 {

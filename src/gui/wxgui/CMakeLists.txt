@@ -159,7 +159,7 @@ target_link_libraries(CemuWxGui PRIVATE
   CemuComponents
   pugixml::pugixml
   CemuCafe
-  finlink_core
+  unison_core
   PUBLIC
   CURL::libcurl
 )

@@ -7,7 +7,7 @@
 #include "input/InputManager.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/CafeSystem.h"
-#include "Cemu/finlinkStream/WiiuGamepadStream.h"
+#include "Cemu/unisonStream/WiiuGamepadStream.h"
 
 #include <algorithm>
 
@@ -51,28 +51,28 @@ enum ControllerVPADMapping2 : uint32
 
 namespace
 {
-// finlink_button_bit (finlink/protocol.h) -> the ControllerVPADMapping2 bit
-// each one most directly corresponds to -- see finlink_extended_input's own
+// unison_button_bit (unison/protocol.h) -> the ControllerVPADMapping2 bit
+// each one most directly corresponds to -- see unison_extended_input's own
 // comment on this being a superset of buttons across consoles, of which the
 // Wii U GamePad happens to have (and remote-control) all of them.
-uint32 MapFinlinkButtonsToVpad(uint32 finlinkButtons)
+uint32 MapUnisonButtonsToVpad(uint32 unisonButtons)
 {
 	uint32 hold = 0;
-	if (finlinkButtons & FINLINK_BUTTON_A) hold |= VPAD_A;
-	if (finlinkButtons & FINLINK_BUTTON_B) hold |= VPAD_B;
-	if (finlinkButtons & FINLINK_BUTTON_X) hold |= VPAD_X;
-	if (finlinkButtons & FINLINK_BUTTON_Y) hold |= VPAD_Y;
-	if (finlinkButtons & FINLINK_BUTTON_L) hold |= VPAD_L;
-	if (finlinkButtons & FINLINK_BUTTON_R) hold |= VPAD_R;
-	if (finlinkButtons & FINLINK_BUTTON_ZL) hold |= VPAD_ZL;
-	if (finlinkButtons & FINLINK_BUTTON_ZR) hold |= VPAD_ZR;
-	if (finlinkButtons & FINLINK_BUTTON_SELECT) hold |= VPAD_MINUS;
-	if (finlinkButtons & FINLINK_BUTTON_START) hold |= VPAD_PLUS;
-	if (finlinkButtons & FINLINK_BUTTON_UP) hold |= VPAD_UP;
-	if (finlinkButtons & FINLINK_BUTTON_DOWN) hold |= VPAD_DOWN;
-	if (finlinkButtons & FINLINK_BUTTON_LEFT) hold |= VPAD_LEFT;
-	if (finlinkButtons & FINLINK_BUTTON_RIGHT) hold |= VPAD_RIGHT;
-	if (finlinkButtons & FINLINK_BUTTON_HOME) hold |= VPAD_HOME;
+	if (unisonButtons & UNISON_BUTTON_A) hold |= VPAD_A;
+	if (unisonButtons & UNISON_BUTTON_B) hold |= VPAD_B;
+	if (unisonButtons & UNISON_BUTTON_X) hold |= VPAD_X;
+	if (unisonButtons & UNISON_BUTTON_Y) hold |= VPAD_Y;
+	if (unisonButtons & UNISON_BUTTON_L) hold |= VPAD_L;
+	if (unisonButtons & UNISON_BUTTON_R) hold |= VPAD_R;
+	if (unisonButtons & UNISON_BUTTON_ZL) hold |= VPAD_ZL;
+	if (unisonButtons & UNISON_BUTTON_ZR) hold |= VPAD_ZR;
+	if (unisonButtons & UNISON_BUTTON_SELECT) hold |= VPAD_MINUS;
+	if (unisonButtons & UNISON_BUTTON_START) hold |= VPAD_PLUS;
+	if (unisonButtons & UNISON_BUTTON_UP) hold |= VPAD_UP;
+	if (unisonButtons & UNISON_BUTTON_DOWN) hold |= VPAD_DOWN;
+	if (unisonButtons & UNISON_BUTTON_LEFT) hold |= VPAD_LEFT;
+	if (unisonButtons & UNISON_BUTTON_RIGHT) hold |= VPAD_RIGHT;
+	if (unisonButtons & UNISON_BUTTON_HOME) hold |= VPAD_HOME;
 	return hold;
 }
 }
@@ -83,8 +83,8 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	m_mic_active = false;
 	m_screen_active = false;
 
-	// A remote finlink client streaming the GamePad screen (see
-	// Cemu/finlinkStream/WiiuGamepadStream.h) wholesale overrides
+	// A remote Unison client streaming the GamePad screen (see
+	// Cemu/unisonStream/WiiuGamepadStream.h) wholesale overrides
 	// buttons/sticks too, same as it already does touch (update_touch()
 	// above, from the same GetInputOverride() call) -- local controller
 	// input is ignored entirely for the duration of the remote session
@@ -92,15 +92,15 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	// semantics. axis/rotation feed the exact same stick-direction ->
 	// hold-bit threshold logic below either way, just sourced from the
 	// remote stick position instead of a local controller's.
-	const auto remoteInput = Cemu::FinlinkStream::g_wiiuGamepadStream
-	                              ? Cemu::FinlinkStream::g_wiiuGamepadStream->GetInputOverride()
+	const auto remoteInput = Cemu::UnisonStream::g_wiiuGamepadStream
+	                              ? Cemu::UnisonStream::g_wiiuGamepadStream->GetInputOverride()
 	                              : std::nullopt;
 
 	glm::vec2 axis, rotation;
 	if (remoteInput)
 	{
-		status.hold = MapFinlinkButtonsToVpad(remoteInput->buttons);
-		m_homebutton_down |= (remoteInput->buttons & FINLINK_BUTTON_HOME) != 0;
+		status.hold = MapUnisonButtonsToVpad(remoteInput->buttons);
+		m_homebutton_down |= (remoteInput->buttons & UNISON_BUTTON_HOME) != 0;
 		axis = {remoteInput->left_x / 32767.0f, remoteInput->left_y / 32767.0f};
 		rotation = {remoteInput->right_x / 32767.0f, remoteInput->right_y / 32767.0f};
 	}
@@ -249,8 +249,8 @@ void VPADController::update_touch(VPADStatus_t& status)
 	status.tpData.x = (uint16)m_last_touch_position.x;
 	status.tpData.y = (uint16)m_last_touch_position.y;
 
-	// A remote finlink client streaming the GamePad screen (see
-	// Cemu/finlinkStream/WiiuGamepadStream.h) wholesale overrides touch --
+	// A remote Unison client streaming the GamePad screen (see
+	// Cemu/unisonStream/WiiuGamepadStream.h) wholesale overrides touch --
 	// buttons/sticks are handled separately in VPADRead(), from the same
 	// GetInputOverride() call. Deliberately a short-circuit here rather
 	// than routing through InputManager's mouse-emulation path below: that
@@ -258,13 +258,13 @@ void VPADController::update_touch(VPADStatus_t& status)
 	// on-screen pixel rectangle (LatteRenderTarget_getScreenImageArea),
 	// which has no meaning for a remote client that may have no local
 	// window open at all. The remote touch is already normalized to the
-	// DRC's own 854x480 pixel space (finlink's docs/protocol.md, same
+	// DRC's own 854x480 pixel space (Unison's docs/protocol.md, same
 	// n3ds_touch convention the other secondary-screen stream types use),
 	// so it only needs the same raw-digitizer-range formula the code below
 	// already applies to a relative position.
-	if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+	if (Cemu::UnisonStream::g_wiiuGamepadStream)
 	{
-		if (auto input = Cemu::FinlinkStream::g_wiiuGamepadStream->GetInputOverride())
+		if (auto input = Cemu::UnisonStream::g_wiiuGamepadStream->GetInputOverride())
 		{
 			if (input->pressed)
 			{

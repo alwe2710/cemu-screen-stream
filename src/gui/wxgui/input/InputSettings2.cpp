@@ -18,7 +18,7 @@
 #include <wx/settings.h>
 
 #include "config/ActiveSettings.h"
-#include "Cemu/finlinkStream/WiiuGamepadStream.h"
+#include "Cemu/unisonStream/WiiuGamepadStream.h"
 #include "wxgui/input/InputAPIAddWindow.h"
 #include "input/ControllerFactory.h"
 
@@ -424,23 +424,23 @@ void InputSettings2::update_state()
 				panel->load_controller(page_data.m_controller);
 		}
 
-		// This slot maps to the Wii U GamePad -- whenever finlink streaming
+		// This slot maps to the Wii U GamePad -- whenever Unison streaming
 		// is enabled, button/touch input for it is provided by the
-		// connected finlink client instead (see VPADController.cpp's
+		// connected Unison client instead (see VPADController.cpp's
 		// GetInputOverride() consumption), silently overriding whatever a
 		// local mapping here would produce. Gray out the mapping panel
 		// itself rather than leave a setting that's misleading while
 		// active, mirroring the mic/audio gray-out already applied
 		// elsewhere (GeneralSettings2.cpp) under the same condition. Other
 		// slots (Pro/Classic/Wiimote controllers) are never affected --
-		// finlink only ever overrides the GamePad.
+		// Unison only ever overrides the GamePad.
 		if (auto* vpadPanel = page_data.m_panels[EmulatedController::Type::VPAD])
 		{
 			const bool blocked = active_api.value() == EmulatedController::Type::VPAD &&
-			                      (bool)Cemu::FinlinkStream::g_wiiuGamepadStream;
+			                      (bool)Cemu::UnisonStream::g_wiiuGamepadStream;
 			vpadPanel->Enable(!blocked);
 			vpadPanel->SetToolTip(blocked
-				? _("Disabled while finlink streaming is enabled: button/touch input for the GamePad is provided by the connected finlink client instead.")
+				? _("Disabled while Unison streaming is enabled: button/touch input for the GamePad is provided by the connected Unison client instead.")
 				: wxString());
 		}
 		return;
@@ -504,10 +504,10 @@ void InputSettings2::update_state()
 		// never visited before).
 		if (type == EmulatedController::Type::VPAD)
 		{
-			const bool blocked = (bool)Cemu::FinlinkStream::g_wiiuGamepadStream;
+			const bool blocked = (bool)Cemu::UnisonStream::g_wiiuGamepadStream;
 			panel->Enable(!blocked);
 			panel->SetToolTip(blocked
-				? _("Disabled while finlink streaming is enabled: button/touch input for the GamePad is provided by the connected finlink client instead.")
+				? _("Disabled while Unison streaming is enabled: button/touch input for the GamePad is provided by the connected Unison client instead.")
 				: wxString());
 		}
 	}

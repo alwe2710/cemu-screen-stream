@@ -2,7 +2,7 @@
 #include "input/InputManager.h"
 #include "audio/IAudioInputAPI.h"
 #include "config/CemuConfig.h"
-#include "Cemu/finlinkStream/WiiuGamepadStream.h"
+#include "Cemu/unisonStream/WiiuGamepadStream.h"
 
 enum class MIC_RESULT
 {
@@ -152,10 +152,10 @@ void micExport_MICInit(PPCInterpreter_t* hCPU)
 		IAudioInputAPI::AudioInputAPI audio_api = IAudioInputAPI::Cubeb;
 		IAudioInputAPI::DeviceDescriptionPtr device_description;
 
-		// Whenever finlink GamePad streaming is enabled (not just while a
+		// Whenever Unison GamePad streaming is enabled (not just while a
 		// client happens to be connected -- g_wiiuGamepadStream is
 		// non-null for the whole session once the feature is turned on,
-		// see MainWindow.cpp), the mic is forced to the Finlink Remote
+		// see MainWindow.cpp), the mic is forced to the Unison Remote
 		// Microphone device, ignoring config.input_device entirely: a
 		// locally-selected mic would silently never receive any audio
 		// once a client connects and SubmitGamepadAudio()-style output
@@ -163,22 +163,22 @@ void micExport_MICInit(PPCInterpreter_t* hCPU)
 		// local device "selected" but effectively dead is more confusing
 		// than forcing the one device that actually works here (matches
 		// ax_out.cpp's AIInitDRCDMA(), which forces GamePad audio output
-		// to finlink the same way, and GeneralSettings2.cpp's UI grays out
+		// to Unison the same way, and GeneralSettings2.cpp's UI grays out
 		// the mic device combo box under the same condition).
-		if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+		if (Cemu::UnisonStream::g_wiiuGamepadStream)
 		{
-			auto devices = IAudioInputAPI::GetDevices(IAudioInputAPI::Finlink);
+			auto devices = IAudioInputAPI::GetDevices(IAudioInputAPI::Unison);
 			if (!devices.empty())
 			{
-				audio_api = IAudioInputAPI::Finlink;
+				audio_api = IAudioInputAPI::Unison;
 				device_description = devices.front();
 			}
 		}
 
 		// Search every available input API for a device matching the
 		// configured identifier (rather than assuming Cubeb) -- lets
-		// config.input_device also resolve to the Finlink Remote Microphone
-		// device (see FinlinkInputAPI.h), not just a real Cubeb device.
+		// config.input_device also resolve to the Unison Remote Microphone
+		// device (see UnisonInputAPI.h), not just a real Cubeb device.
 		if (!device_description)
 		{
 			for (uint32 api = 0; api < IAudioInputAPI::AudioInputAPIEnd; api++)

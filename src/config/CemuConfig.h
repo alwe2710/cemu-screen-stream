@@ -513,14 +513,14 @@ struct CemuConfig
 	ConfigValueBounds<CrashDump> crash_dump{ CrashDump::Disabled };
 	ConfigValue<uint16> gdb_port{ 1337 };
 
-	// finlink WIIU_GAMEPAD streaming server (Cemu/finlinkStream/): lets a
-	// remote finlink client (see the sibling azahar-screen-stream/
+	// Unison WIIU_GAMEPAD streaming server (Cemu/unisonStream/): lets a
+	// remote Unison client (see the sibling azahar-screen-stream/
 	// melonds-screen-stream forks' own use of the same protocol) view and
 	// touch-control the emulated GamePad screen over the network. Off by
 	// default -- it's a listening socket, opt-in only, same reasoning as
 	// gdb_port above.
-	ConfigValue<bool> finlink_enabled{ false };
-	ConfigValue<uint16> finlink_port{ 6840 };
+	ConfigValue<bool> unison_enabled{ false };
+	ConfigValue<uint16> unison_port{ 6840 };
 #ifdef ENABLE_METAL
 	ConfigValue<std::string> gpu_capture_dir{ "" };
 	ConfigValue<bool> framebuffer_fetch{ true };

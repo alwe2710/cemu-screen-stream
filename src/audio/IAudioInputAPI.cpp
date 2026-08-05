@@ -2,7 +2,7 @@
 #if HAS_CUBEB
 #include "CubebInputAPI.h"
 #endif
-#include "FinlinkInputAPI.h"
+#include "UnisonInputAPI.h"
 
 std::shared_mutex g_audioInputMutex;
 AudioInputAPIPtr g_inputAudio;
@@ -19,7 +19,7 @@ void IAudioInputAPI::PrintLogging()
 {
 	cemuLog_log(LogType::Force, "------- Init Audio input backend -------");
 	cemuLog_log(LogType::Force, "Cubeb: {}", s_availableApis[Cubeb] ? "available" : "not supported");
-	cemuLog_log(LogType::Force, "Finlink: {}", s_availableApis[Finlink] ? "available" : "not supported");
+	cemuLog_log(LogType::Force, "Unison: {}", s_availableApis[Unison] ? "available" : "not supported");
 }
 
 void IAudioInputAPI::InitializeStatic()
@@ -27,7 +27,7 @@ void IAudioInputAPI::InitializeStatic()
 #if HAS_CUBEB
 	s_availableApis[Cubeb] = CubebInputAPI::InitializeStatic();
 #endif
-	s_availableApis[Finlink] = FinlinkInputAPI::InitializeStatic();
+	s_availableApis[Unison] = UnisonInputAPI::InitializeStatic();
 }
 
 bool IAudioInputAPI::IsAudioInputAPIAvailable(AudioInputAPI api)
@@ -53,8 +53,8 @@ AudioInputAPIPtr IAudioInputAPI::CreateDevice(AudioInputAPI api, const DeviceDes
 		return std::make_unique<CubebInputAPI>(tmp->GetDeviceId(), samplerate, channels, samples_per_block, bits_per_sample);
 	}
 #endif
-	case Finlink:
-		return std::make_unique<FinlinkInputAPI>(samplerate, channels, samples_per_block, bits_per_sample);
+	case Unison:
+		return std::make_unique<UnisonInputAPI>(samplerate, channels, samples_per_block, bits_per_sample);
 	default:
 		throw std::runtime_error(fmt::format("invalid audio api: {}", api));
 	}
@@ -73,8 +73,8 @@ std::vector<IAudioInputAPI::DeviceDescriptionPtr> IAudioInputAPI::GetDevices(Aud
 		return CubebInputAPI::GetDevices();
 	}
 #endif
-	case Finlink:
-		return FinlinkInputAPI::GetDevices();
+	case Unison:
+		return UnisonInputAPI::GetDevices();
 	default:
 		throw std::runtime_error(fmt::format("invalid audio api: {}", api));
 	}

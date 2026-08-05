@@ -10,12 +10,12 @@
 #include <sstream>
 #include <thread>
 
-#include "finlink/discovery.h"
-#include "FinlinkMessages.h"
+#include "unison/discovery.h"
+#include "UnisonMessages.h"
 
 #include "Cafe/CafeSystem.h"
 
-namespace Cemu::FinlinkStream
+namespace Cemu::UnisonStream
 {
 
 namespace
@@ -64,7 +64,7 @@ std::string ProbeLocalHost()
 }
 
 // Escapes a string for embedding as a JSON string literal. Mirrors
-// FinlinkMessages.cpp's own JsonEscape() (anonymous-namespace, not shared
+// UnisonMessages.cpp's own JsonEscape() (anonymous-namespace, not shared
 // across translation units) -- only the game title ever passes through
 // here, but titles are free-form metadata text, not a fixed literal set.
 std::string JsonEscape(const std::string& in)
@@ -126,7 +126,7 @@ std::string Beacon::BuildMessage() const
 
 	std::ostringstream out;
 	out << "{"
-		<< "\"type\":\"finlink_beacon\","
+		<< "\"type\":\"unison_beacon\","
 		<< "\"protocol_version\":" << kProtocolVersion << ","
 		<< "\"emulator_identifier\":\"Cemu\","
 		<< "\"game_title\":\"" << JsonEscape(title) << "\","
@@ -148,7 +148,7 @@ void Beacon::Run()
 
 	sockaddr_in broadcastAddr{};
 	broadcastAddr.sin_family = AF_INET;
-	broadcastAddr.sin_port = htons(FINLINK_BEACON_PORT);
+	broadcastAddr.sin_port = htons(UNISON_BEACON_PORT);
 	broadcastAddr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
 	while (!m_stop)

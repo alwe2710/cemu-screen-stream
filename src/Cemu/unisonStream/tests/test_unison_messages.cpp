@@ -1,16 +1,16 @@
-// FinlinkMessages.{h,cpp} had zero test coverage before this file, despite
+// UnisonMessages.{h,cpp} had zero test coverage before this file, despite
 // being exactly where hello_ack.video_mode gets parsed and
 // session_ready.video_mode gets reported -- the two fields the "Video-mode
-// fallback" negotiation feature (finlink/docs/protocol.md) actually runs
+// fallback" negotiation feature (unison/docs/protocol.md) actually runs
 // on. Standalone, deliberately not wired into Cemu's own (huge) CMake
-// build: FinlinkMessages.cpp only depends on finlink/json.h's span parser
+// build: UnisonMessages.cpp only depends on unison/json.h's span parser
 // (see its own header comment, "no socket I/O"), so this links against
-// just that one finlink_core source file, not the whole emulator -- see
+// just that one unison_core source file, not the whole emulator -- see
 // tests/CMakeLists.txt in this directory.
 
-#include "../FinlinkMessages.h"
+#include "../UnisonMessages.h"
 
-#include "finlink/handshake.h"
+#include "unison/handshake.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -26,7 +26,7 @@
 		}                                                                      \
 	} while (0)
 
-using namespace Cemu::FinlinkStream;
+using namespace Cemu::UnisonStream;
 
 namespace
 {
@@ -49,9 +49,9 @@ void TestBuildHelloMessage()
 	// Round-trip through the actual shared parser every client uses, not
 	// just a substring match -- catches a field that's technically present
 	// but not where a real hello parse would look for it.
-	finlink_hello parsed;
-	CHECK(finlink_parse_hello(reinterpret_cast<const uint8_t*>(hello.data()), hello.size(), &parsed) ==
-	      FINLINK_HANDSHAKE_OK);
+	unison_hello parsed;
+	CHECK(unison_parse_hello(reinterpret_cast<const uint8_t*>(hello.data()), hello.size(), &parsed) ==
+	      UNISON_HANDSHAKE_OK);
 	CHECK(parsed.protocol_version == kProtocolVersion);
 	CHECK(std::strcmp(parsed.stream_type, kStreamType) == 0);
 	CHECK(parsed.video.width == kStreamWidth && parsed.video.height == kStreamHeight);
@@ -128,9 +128,9 @@ void TestBuildSessionReadyMessageVideoMode()
 		const std::string ready_json = BuildSessionReadyMessage(mode);
 		CHECK(ready_json.find("\"message\":\"session_ready\"") != std::string::npos);
 
-		finlink_session_ready parsed;
-		CHECK(finlink_parse_session_ready(reinterpret_cast<const uint8_t*>(ready_json.data()), ready_json.size(),
-		                                   &parsed) == FINLINK_HANDSHAKE_OK);
+		unison_session_ready parsed;
+		CHECK(unison_parse_session_ready(reinterpret_cast<const uint8_t*>(ready_json.data()), ready_json.size(),
+		                                   &parsed) == UNISON_HANDSHAKE_OK);
 		CHECK(std::strcmp(parsed.video_mode, mode) == 0);
 		CHECK(parsed.video.width == kStreamWidth && parsed.video.height == kStreamHeight);
 		CHECK(parsed.has_audio && parsed.audio.sample_rate == 48000 && parsed.audio.channels == 2);
@@ -146,9 +146,9 @@ void TestBuildHandshakeErrorMessage()
 	const std::string err_json =
 	    BuildHandshakeErrorMessage(HandshakeErrorCode::SlotUnavailable, "already has an active client");
 
-	finlink_handshake_error parsed;
-	CHECK(finlink_parse_handshake_error(reinterpret_cast<const uint8_t*>(err_json.data()), err_json.size(),
-	                                     &parsed) == FINLINK_HANDSHAKE_OK);
+	unison_handshake_error parsed;
+	CHECK(unison_parse_handshake_error(reinterpret_cast<const uint8_t*>(err_json.data()), err_json.size(),
+	                                     &parsed) == UNISON_HANDSHAKE_OK);
 	CHECK(std::strcmp(parsed.code, "slot_unavailable") == 0);
 	CHECK(std::strcmp(parsed.detail, "already has an active client") == 0);
 
@@ -158,8 +158,8 @@ void TestBuildHandshakeErrorMessage()
 	// than corrupting the message or ending the JSON string early.
 	const std::string tricky_json =
 	    BuildHandshakeErrorMessage(HandshakeErrorCode::MalformedRequest, R"(bad "field" \ value)");
-	CHECK(finlink_parse_handshake_error(reinterpret_cast<const uint8_t*>(tricky_json.data()), tricky_json.size(),
-	                                     &parsed) == FINLINK_HANDSHAKE_OK);
+	CHECK(unison_parse_handshake_error(reinterpret_cast<const uint8_t*>(tricky_json.data()), tricky_json.size(),
+	                                     &parsed) == UNISON_HANDSHAKE_OK);
 	CHECK(std::strcmp(parsed.detail, R"(bad "field" \ value)") == 0);
 }
 
@@ -174,6 +174,6 @@ int main()
 	TestParseHelloAckRejectsMalformed();
 	TestBuildSessionReadyMessageVideoMode();
 	TestBuildHandshakeErrorMessage();
-	std::printf("finlink_messages: all tests passed\n");
+	std::printf("unison_messages: all tests passed\n");
 	return 0;
 }

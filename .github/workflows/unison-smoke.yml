@@ -1,11 +1,11 @@
-name: finlink smoke
+name: Unison smoke
 
 # Fork-owned workflow, deliberately separate from the upstream-inherited
 # build_check.yml/build.yml (which only trigger on push to `main` and PRs
 # -- this fork's actual work happens on `transcoding`, which they never
 # see) so future `git fetch upstream && merge` syncs from cemu-project/Cemu
-# don't collide with anything finlink-specific. Part of the finlink CI
-# pipeline's build-smoke stage; see finlink/docs/capabilities.md and the
+# don't collide with anything unison-specific. Part of the Unison CI
+# pipeline's build-smoke stage; see unison/docs/capabilities.md and the
 # 5-repo drift snapshot in the plan this came from.
 
 on:
@@ -16,8 +16,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  finlink-freshness:
-    name: dependencies/finlink freshness
+  unison-freshness:
+    name: dependencies/unison freshness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -28,7 +28,7 @@ jobs:
       # itself. Fails loudly (separate job, doesn't block full-build below)
       # rather than a soft warning, since a silent one would be too easy to
       # miss for a solo maintainer watching Actions on a fork.
-      - name: Compare pinned commit + tracked branch against canonical finlink
+      - name: Compare pinned commit + tracked branch against canonical Unison
         run: |
           set -euo pipefail
           # This fork's own work lives on transcoding, not .gitmodules'
@@ -38,21 +38,21 @@ jobs:
           # .gitmodules itself.
           EXPECTED_BRANCH="transcoding"
 
-          DECLARED_BRANCH="$(git config -f .gitmodules --get submodule.dependencies/finlink.branch || echo '(none)')"
-          PINNED_SHA="$(git ls-tree HEAD dependencies/finlink | awk '{print $3}')"
-          LATEST_SHA="$(git ls-remote https://github.com/alwe2710/finlink.git "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
+          DECLARED_BRANCH="$(git config -f .gitmodules --get submodule.dependencies/unison.branch || echo '(none)')"
+          PINNED_SHA="$(git ls-tree HEAD dependencies/unison | awk '{print $3}')"
+          LATEST_SHA="$(git ls-remote https://github.com/alwe2710/Unison.git "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
 
-          echo "Pinned dependencies/finlink commit: $PINNED_SHA"
-          echo "Latest commit on finlink's $EXPECTED_BRANCH:  $LATEST_SHA"
+          echo "Pinned dependencies/unison commit: $PINNED_SHA"
+          echo "Latest commit on Unison's $EXPECTED_BRANCH:  $LATEST_SHA"
           echo ".gitmodules declared tracking branch: $DECLARED_BRANCH (expected: $EXPECTED_BRANCH)"
 
           status=0
           if [ "$DECLARED_BRANCH" != "$EXPECTED_BRANCH" ]; then
-            echo "::warning::.gitmodules declares tracking branch '$DECLARED_BRANCH' for dependencies/finlink, but this fork's actual work happens on '$EXPECTED_BRANCH' -- 'git submodule update --remote' would silently pull the wrong branch. Fix the 'branch =' line in .gitmodules."
+            echo "::warning::.gitmodules declares tracking branch '$DECLARED_BRANCH' for dependencies/unison, but this fork's actual work happens on '$EXPECTED_BRANCH' -- 'git submodule update --remote' would silently pull the wrong branch. Fix the 'branch =' line in .gitmodules."
             status=1
           fi
           if [ "$PINNED_SHA" != "$LATEST_SHA" ]; then
-            echo "::warning::dependencies/finlink is pinned at $PINNED_SHA, which is behind finlink's $EXPECTED_BRANCH tip ($LATEST_SHA). Update with: git submodule update --remote dependencies/finlink && git add dependencies/finlink && git commit"
+            echo "::warning::dependencies/unison is pinned at $PINNED_SHA, which is behind Unison's $EXPECTED_BRANCH tip ($LATEST_SHA). Update with: git submodule update --remote dependencies/unison && git add dependencies/unison && git commit"
             status=1
           fi
           exit $status
@@ -61,7 +61,7 @@ jobs:
     # Static/structural, not a build -- see tools/check_dual_audio_isolation.py's
     # own docstring for why this is the right way to prove the
     # "dual-audio-server" test category property (only GamePad audio ever
-    # reaches finlink, TV audio plays locally untouched) without a full
+    # reaches Unison, TV audio plays locally untouched) without a full
     # ROM-booted Wii U title in CI.
     name: dual-audio-server isolation (ax_out.cpp static check)
     runs-on: ubuntu-latest
@@ -71,23 +71,23 @@ jobs:
           submodules: false
       - run: python3 tools/check_dual_audio_isolation.py
 
-  finlink-messages-test:
-    # Deliberately fast/separate from full-build below: FinlinkMessages.cpp
-    # only needs finlink_core's json.c/handshake.c (see tests/CMakeLists.txt's
+  unison-messages-test:
+    # Deliberately fast/separate from full-build below: UnisonMessages.cpp
+    # only needs unison_core's json.c/handshake.c (see tests/CMakeLists.txt's
     # own comment), not vcpkg or any of the rest of Cemu, so this doesn't
     # need full-build's heavy dependency bootstrap at all.
-    name: FinlinkMessages.cpp unit tests
+    name: UnisonMessages.cpp unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          submodules: true # only need dependencies/finlink, but recursive is simplest here
+          submodules: true # only need dependencies/unison, but recursive is simplest here
       - name: Configure
-        run: cmake -S src/Cemu/finlinkStream/tests -B build/finlink_messages_test
+        run: cmake -S src/Cemu/unisonStream/tests -B build/unison_messages_test
       - name: Build
-        run: cmake --build build/finlink_messages_test -j"$(nproc)"
+        run: cmake --build build/unison_messages_test -j"$(nproc)"
       - name: Test
-        working-directory: build/finlink_messages_test
+        working-directory: build/unison_messages_test
         run: ctest --output-on-failure
 
   full-build:

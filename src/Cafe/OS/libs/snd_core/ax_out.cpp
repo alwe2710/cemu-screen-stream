@@ -4,7 +4,7 @@
 #include "audio/IAudioAPI.h"
 //#include "ax.h"
 #include "config/CemuConfig.h"
-#include "Cemu/finlinkStream/WiiuGamepadStream.h"
+#include "Cemu/unisonStream/WiiuGamepadStream.h"
 
 namespace snd_core
 {
@@ -318,7 +318,7 @@ namespace snd_core
 		// mono-upmixed-to-stereo AX_MODE_MONO, 6 for AX_MODE_6CH) --
 		// deriving it from g_padAudio->GetChannels() instead (as before)
 		// silently produced the wrong stride whenever no local GamePad
-		// audio device was configured (g_padAudio null), which finlink
+		// audio device was configured (g_padAudio null), which Unison
 		// forwarding below now depends on being correct even when there's
 		// no local device at all.
 		const uint32 channels = (uint32)(sampleCount / AX_SAMPLES_PER_3MS_48KHZ);
@@ -331,19 +331,19 @@ namespace snd_core
 		tempDRCAudioBlockCounter++;
 		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
-			// While a finlink client is connected, GamePad audio is meant to
+			// While a Unison client is connected, GamePad audio is meant to
 			// play exclusively there instead of also locally -- forward the
 			// accumulated block and, if it was taken, skip the local
 			// g_padAudio playback below (see WiiuGamepadStream::
 			// SubmitGamepadAudio()'s own comment).
-			bool consumedByFinlink = false;
-			if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+			bool consumedByUnison = false;
+			if (Cemu::UnisonStream::g_wiiuGamepadStream)
 			{
 				const size_t blockSampleCount = (size_t)AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP * channels;
-				consumedByFinlink = Cemu::FinlinkStream::g_wiiuGamepadStream->SubmitGamepadAudio(tempDRCChannelData, blockSampleCount, 48000, (uint8_t)channels);
+				consumedByUnison = Cemu::UnisonStream::g_wiiuGamepadStream->SubmitGamepadAudio(tempDRCChannelData, blockSampleCount, 48000, (uint8_t)channels);
 			}
 
-			if (g_padAudio && !consumedByFinlink)
+			if (g_padAudio && !consumedByUnison)
 				g_padAudio->FeedBlock(tempDRCChannelData);
 
 			tempDRCAudioBlockCounter = 0;

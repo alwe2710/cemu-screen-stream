@@ -16,7 +16,7 @@
 #include "Cafe/OS/libs/erreula/erreula.h"
 #include "input/InputManager.h"
 #include "Cafe/OS/libs/swkbd/swkbd.h"
-#include "Cemu/finlinkStream/WiiuGamepadStream.h"
+#include "Cemu/unisonStream/WiiuGamepadStream.h"
 
 uint32 prevScissorX = 0;
 uint32 prevScissorY = 0;
@@ -981,14 +981,14 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 		return;
 	}
 
-	// finlink WIIU_GAMEPAD stream (Cemu/finlinkStream/WiiuGamepadStream.h):
+	// Unison WIIU_GAMEPAD stream (Cemu/unisonStream/WiiuGamepadStream.h):
 	// deliberately hooked here, unconditionally, rather than down in the
 	// (renderTarget & RENDER_TARGET_DRC) && g_renderer->IsPadWindowActive()
 	// branch below -- that branch only runs while the local "GamePad View"
 	// window is open, which would defeat the point of a *remote* second
 	// screen. This runs every frame regardless of any local window state.
-	if (Cemu::FinlinkStream::g_wiiuGamepadStream && (renderTarget & RENDER_TARGET_DRC))
-		Cemu::FinlinkStream::g_wiiuGamepadStream->OnDrcFrame(texView);
+	if (Cemu::UnisonStream::g_wiiuGamepadStream && (renderTarget & RENDER_TARGET_DRC))
+		Cemu::UnisonStream::g_wiiuGamepadStream->OnDrcFrame(texView);
 
 	auto getVPADScreenActive = [](size_t n) -> std::pair<bool, bool> {
 		auto controller = InputManager::instance().get_vpad_controller(n);

@@ -1,6 +1,6 @@
 add_library(CemuAudio
-	FinlinkInputAPI.cpp
-	FinlinkInputAPI.h
+	UnisonInputAPI.cpp
+	UnisonInputAPI.h
 	IAudioAPI.cpp
 	IAudioAPI.h
 	IAudioInputAPI.cpp
@@ -38,7 +38,7 @@ target_link_libraries(CemuAudio PRIVATE
 	CemuCommon
 	CemuComponents
 	CemuGui
-	finlink_core
+	unison_core
 )
 
 if(ENABLE_CUBEB)

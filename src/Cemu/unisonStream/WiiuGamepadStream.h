@@ -1,9 +1,9 @@
 #pragma once
 
-// Server implementation for the WIIU_GAMEPAD finlink stream type: a
+// Server implementation for the WIIU_GAMEPAD Unison stream type: a
 // single-slot WebSocket server that streams the emulated Wii U GamePad
 // (DRC) screen (854x480) to one remote client and accepts touch input back,
-// per finlink's docs/protocol.md. Sibling implementation to the
+// per Unison's docs/protocol.md. Sibling implementation to the
 // azahar-screen-stream (N3DS_BOTTOM_SCREEN) and melonds-screen-stream
 // (NDS_BOTTOM_SCREEN) forks' own streaming servers -- same wire protocol,
 // same overall shape.
@@ -38,7 +38,7 @@
 
 #include "Common/socket.h"
 
-#include <finlink/protocol.h>
+#include <unison/protocol.h>
 
 #include <atomic>
 #include <chrono>
@@ -52,7 +52,7 @@
 
 class LatteTextureView;
 
-namespace Cemu::FinlinkStream
+namespace Cemu::UnisonStream
 {
 
 class Beacon;
@@ -68,7 +68,7 @@ public:
 
 	void OnDrcFrame(LatteTextureView* texView);
 
-	[[nodiscard]] std::optional<finlink_extended_input> GetInputOverride() const;
+	[[nodiscard]] std::optional<unison_extended_input> GetInputOverride() const;
 
 	// True whenever a client is connected and streaming (single slot, see
 	// m_active below). GeneralSettings2 reads this once at dialog-open time
@@ -104,14 +104,14 @@ public:
 	// Returns true if a client is connected, meaning these samples are now
 	// this stream's to deliver: the caller must NOT also feed them to the
 	// local g_padAudio device, so GamePad audio plays exclusively on the
-	// finlink client while it's connected instead of also locally. Returns
+	// Unison client while it's connected instead of also locally. Returns
 	// false (no client connected) if the caller should play them back
 	// locally as usual -- mirrors dolphin-gba-stream's own
 	// ForwardAudioSamples() "take ownership" contract.
 	bool SubmitGamepadAudio(const int16_t* samples, size_t sampleCount, uint32_t sampleRate, uint8_t channels);
 
 	// GamePad microphone input -- the reverse direction of SubmitGamepadAudio
-	// above. Called from FinlinkInputAPI (src/audio/FinlinkInputAPI.h), the
+	// above. Called from UnisonInputAPI (src/audio/UnisonInputAPI.h), the
 	// IAudioInputAPI backend a user selects as the GamePad's microphone
 	// device in General Settings, exactly like a real Cubeb device.
 	//
@@ -119,12 +119,12 @@ public:
 	// the game has the mic open (mic.cpp's MICStatus.drc[x].isOpen, via
 	// mic_updateDevicePlayState() -> IAudioInputAPI::Play()/Stop()), not
 	// continuously just because a client is connected -- causes RunSession
-	// to send a FINLINK_MSG_MIC_ENABLE to the client on the next loop
+	// to send a UNISON_MSG_MIC_ENABLE to the client on the next loop
 	// iteration if the wanted state actually changed.
 	void SetMicWanted(bool wanted, uint32_t sampleRate);
 
 	// Drains and returns whatever mic audio the client has sent since the
-	// last call (never blocks) -- FinlinkInputAPI::ConsumeBlock() polls this
+	// last call (never blocks) -- UnisonInputAPI::ConsumeBlock() polls this
 	// once per AX tick. Empty if nothing new has arrived. Raw s16le bytes,
 	// mono (the Wii U GamePad mic, like the 3DS's, is mono-only).
 	[[nodiscard]] std::vector<uint8_t> PollMicAudio();
@@ -141,7 +141,7 @@ private:
 	std::unique_ptr<Beacon> m_beacon;
 
 	// Claimed by the one session currently allowed to stream (this stream
-	// type has exactly one slot, see FinlinkMessages.cpp).
+	// type has exactly one slot, see UnisonMessages.cpp).
 	std::atomic_bool m_active{false};
 
 	// Minimum interval between GPU readbacks -- see this file's own comment
@@ -159,7 +159,7 @@ private:
 	std::atomic_bool m_streaming{false}; // session_ready sent, input override live
 	std::atomic_bool m_inputActive{false};
 	mutable std::mutex m_inputMutex;
-	finlink_extended_input m_latestInput{};
+	unison_extended_input m_latestInput{};
 
 	std::mutex m_textInputMutex;
 	bool m_textInputRequestPending = false;
@@ -178,7 +178,7 @@ private:
 	uint32_t m_audioSampleRate = 48000;
 	uint8_t m_audioChannels = 2;
 
-	// GamePad microphone input pending delivery to FinlinkInputAPI, plus the
+	// GamePad microphone input pending delivery to UnisonInputAPI, plus the
 	// want-state going the other way -- separate mutex/fields from the
 	// speaker-audio ones above since these are two independent directions
 	// (out vs in), not reusable state.

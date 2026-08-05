@@ -5,17 +5,17 @@
 #include <array>
 #include <cstring>
 
-#include "finlink/deflate.h"
-#include "finlink/protocol.h"
-#include "finlink/video_encode.h"
+#include "unison/deflate.h"
+#include "unison/protocol.h"
+#include "unison/video_encode.h"
 #include "Beacon.h"
-#include "FinlinkMessages.h"
-#include "FinlinkWebSocket.h"
+#include "UnisonMessages.h"
+#include "UnisonWebSocket.h"
 #include "SoftwareVideoEncoder.h"
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 
-namespace Cemu::FinlinkStream
+namespace Cemu::UnisonStream
 {
 
 std::unique_ptr<WiiuGamepadStream> g_wiiuGamepadStream;
@@ -38,15 +38,15 @@ void AppendS16LE(std::vector<uint8_t>& out, int16_t value)
 }
 
 // Hand-built the same way SendVideoFrame() builds a type=1 message -- no
-// finlink_build_audio_frame() exists in core since, like video, the actual
+// unison_build_audio_frame() exists in core since, like video, the actual
 // sample layout/rate is entirely up to each emulator's own audio pipeline
-// (see finlink/protocol.h's finlink_audio_frame: type=3, sample_rate u32le,
+// (see unison/protocol.h's unison_audio_frame: type=3, sample_rate u32le,
 // channels u8, then raw s16le samples, no further structure).
 bool SendAudioFrame(SOCKET fd, const std::vector<int16_t>& samples, uint32_t sampleRate, uint8_t channels, const std::atomic_bool& stop)
 {
 	std::vector<uint8_t> message;
 	message.reserve(6 + samples.size() * sizeof(int16_t));
-	message.push_back((uint8_t)FINLINK_MSG_AUDIO);
+	message.push_back((uint8_t)UNISON_MSG_AUDIO);
 	AppendU32LE(message, sampleRate);
 	message.push_back(channels);
 	for (int16_t sample : samples)
@@ -77,14 +77,14 @@ void ConvertRgba8ToRgb565(const uint8_t* rgba8, int width, int height, std::vect
 
 // lastSentRgb565 is RunSession()'s own session-local "previous frame" state
 // (in/out) -- empty means no previous frame yet (this session's first
-// frame, or a resolution change), matching finlink_encode_video_frame()'s
+// frame, or a resolution change), matching unison_encode_video_frame()'s
 // previous_rgb565=NULL contract. Encodes via TILES delta + dedup against it
 // instead of always sending a full frame (see docs/protocol.md, "Frame
 // semantics (video dedup)" -- this is that behavior, actually implemented).
 // Returns false only on a real socket error (caller should treat the
 // session as dead); a deduped ("nothing changed") frame still returns true
 // having sent nothing.
-// videoMode comes from the client's hello_ack.video_mode (FinlinkMessages.h's
+// videoMode comes from the client's hello_ack.video_mode (UnisonMessages.h's
 // HandshakeAck): "h264"/"h265" use videoEncoder (RunSession's session-local
 // SoftwareVideoEncoder, non-null and IsValid() only when that mode was
 // actually negotiated and construction succeeded -- falls through to the
@@ -114,7 +114,7 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 		if (nals.empty())
 		{
 			if (encodeMs > 20)
-				cemuLog_log(LogType::Force, fmt::format("finlink {} encode took {}ms (no output yet)", videoMode, encodeMs));
+				cemuLog_log(LogType::Force, fmt::format("Unison {} encode took {}ms (no output yet)", videoMode, encodeMs));
 			return true; // Encoder produced no output yet (internal buffering) -- nothing to send.
 		}
 
@@ -126,10 +126,10 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 		// window, so nothing ever asks a decoder to crop here at all.
 		std::vector<uint8_t> message;
 		message.reserve(10 + nals.size());
-		message.push_back((uint8_t)FINLINK_MSG_VIDEO);
+		message.push_back((uint8_t)UNISON_MSG_VIDEO);
 		AppendU32LE(message, videoEncoder->CodedWidth());
 		AppendU32LE(message, videoEncoder->CodedHeight());
-		message.push_back(videoMode == "h264" ? FINLINK_VIDEO_FORMAT_H264 : FINLINK_VIDEO_FORMAT_H265);
+		message.push_back(videoMode == "h264" ? UNISON_VIDEO_FORMAT_H264 : UNISON_VIDEO_FORMAT_H265);
 		message.insert(message.end(), nals.begin(), nals.end());
 
 		const auto sendStart = std::chrono::steady_clock::now();
@@ -137,7 +137,7 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 		const auto sendMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now() - sendStart).count();
 		if (encodeMs > 20 || sendMs > 20)
-			cemuLog_log(LogType::Force, fmt::format("finlink {} frame: {} bytes, encode {}ms, send {}ms", videoMode, nals.size(), encodeMs, sendMs));
+			cemuLog_log(LogType::Force, fmt::format("Unison {} frame: {} bytes, encode {}ms, send {}ms", videoMode, nals.size(), encodeMs, sendMs));
 		return sendOk;
 	}
 
@@ -146,14 +146,14 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 
 	if (videoMode == "legacy")
 	{
-		std::vector<uint8_t> compressed(finlink_deflate_max_size(rgb565.size()));
+		std::vector<uint8_t> compressed(unison_deflate_max_size(rgb565.size()));
 		size_t compressedSize = 0;
-		if (finlink_deflate_raw(rgb565.data(), rgb565.size(), compressed.data(), compressed.size(), &compressedSize) != FINLINK_DEFLATE_OK)
+		if (unison_deflate_raw(rgb565.data(), rgb565.size(), compressed.data(), compressed.size(), &compressedSize) != UNISON_DEFLATE_OK)
 			return true; // compressed is sized correctly above, so this shouldn't happen -- skip this frame rather than kill the session over it.
 
 		std::vector<uint8_t> message;
 		message.reserve(10 + compressedSize);
-		message.push_back((uint8_t)FINLINK_MSG_VIDEO);
+		message.push_back((uint8_t)UNISON_MSG_VIDEO);
 		AppendU32LE(message, (uint32_t)width);
 		AppendU32LE(message, (uint32_t)height);
 		message.push_back(0); // format=0: full frame, no INDEXED/TILES bits set.
@@ -168,24 +168,24 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 	if (lastSentRgb565.size() != rgb565.size())
 		lastSentRgb565.clear();
 
-	std::vector<uint8_t> scratch(finlink_video_encode_scratch_size((uint32_t)width, (uint32_t)height));
-	std::vector<uint8_t> compressed(finlink_video_encode_max_size((uint32_t)width, (uint32_t)height));
+	std::vector<uint8_t> scratch(unison_video_encode_scratch_size((uint32_t)width, (uint32_t)height));
+	std::vector<uint8_t> compressed(unison_video_encode_max_size((uint32_t)width, (uint32_t)height));
 	size_t compressedSize = 0;
 	uint8_t format = 0;
 
 	const uint8_t* previous = lastSentRgb565.empty() ? nullptr : lastSentRgb565.data();
-	finlink_encode_status status = finlink_encode_video_frame(
+	unison_encode_status status = unison_encode_video_frame(
 		rgb565.data(), previous, (uint32_t)width, (uint32_t)height, scratch.data(), scratch.size(),
 		compressed.data(), compressed.size(), &compressedSize, &format);
 
-	if (status == FINLINK_ENCODE_UNCHANGED)
+	if (status == UNISON_ENCODE_UNCHANGED)
 		return true; // Pixel-identical to the last frame actually sent -- nothing to do.
-	if (status != FINLINK_ENCODE_OK)
+	if (status != UNISON_ENCODE_OK)
 		return true; // scratch/compressed are sized correctly above, so this shouldn't happen -- skip this frame rather than kill the session over it.
 
 	std::vector<uint8_t> message;
 	message.reserve(10 + compressedSize);
-	message.push_back((uint8_t)FINLINK_MSG_VIDEO);
+	message.push_back((uint8_t)UNISON_MSG_VIDEO);
 	AppendU32LE(message, (uint32_t)width);
 	AppendU32LE(message, (uint32_t)height);
 	message.push_back(format);
@@ -267,7 +267,7 @@ void WiiuGamepadStream::OnDrcFrame(LatteTextureView* texView)
 	m_frameId++;
 }
 
-std::optional<finlink_extended_input> WiiuGamepadStream::GetInputOverride() const
+std::optional<unison_extended_input> WiiuGamepadStream::GetInputOverride() const
 {
 	if (!m_inputActive.load(std::memory_order_relaxed))
 		return std::nullopt;
@@ -364,7 +364,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	}
 
 	const auto frame = ReceiveOneWebSocketFrame(fd, m_stop, std::chrono::seconds(5));
-	if (!frame || frame->opcode != FINLINK_WS_OPCODE_TEXT)
+	if (!frame || frame->opcode != UNISON_WS_OPCODE_TEXT)
 	{
 		closesocket(fd);
 		return;
@@ -405,7 +405,7 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	m_inputActive = false;
 	m_active = false;
 	// Drop any mic audio this client sent but nobody drained yet -- left
-	// sitting here, it would otherwise get fed to FinlinkInputAPI::
+	// sitting here, it would otherwise get fed to UnisonInputAPI::
 	// ConsumeBlock() as if it were fresh once a later session (or a
 	// belated poll from this one) reads it, mislabeling stale audio as
 	// current.
@@ -509,12 +509,12 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 			}
 			if (pending)
 			{
-				finlink_text_input_request req;
+				unison_text_input_request req;
 				req.max_length = maxLength;
 				req.text = initialText.data();
 				req.text_len = initialText.size();
-				std::vector<uint8_t> payload(finlink_text_input_request_max_size(initialText.size()));
-				size_t payloadLen = finlink_build_text_input_request(&req, payload.data(), payload.size());
+				std::vector<uint8_t> payload(unison_text_input_request_max_size(initialText.size()));
+				size_t payloadLen = unison_build_text_input_request(&req, payload.data(), payload.size());
 				if (payloadLen > 0)
 				{
 					payload.resize(payloadLen);
@@ -534,12 +534,12 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 			}
 			if (wanted != lastSentMicWanted || (wanted && sampleRate != lastSentMicSampleRate))
 			{
-				finlink_mic_enable enable;
+				unison_mic_enable enable;
 				enable.enabled = wanted ? 1 : 0;
 				enable.sample_rate = sampleRate;
-				uint8_t payload[FINLINK_MIC_ENABLE_FRAME_SIZE];
-				finlink_build_mic_enable_frame(&enable, payload);
-				std::vector<uint8_t> message(payload, payload + FINLINK_MIC_ENABLE_FRAME_SIZE);
+				uint8_t payload[UNISON_MIC_ENABLE_FRAME_SIZE];
+				unison_build_mic_enable_frame(&enable, payload);
+				std::vector<uint8_t> message(payload, payload + UNISON_MIC_ENABLE_FRAME_SIZE);
 				if (!SendWebSocketBinaryFrame(fd, message, m_stop))
 					return;
 				lastSentMicWanted = wanted;
@@ -565,38 +565,38 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 						return;
 					break;
 				}
-				if (parsed->opcode == FINLINK_WS_OPCODE_CLOSE)
+				if (parsed->opcode == UNISON_WS_OPCODE_CLOSE)
 					return;
-				if (parsed->opcode != FINLINK_WS_OPCODE_BINARY)
+				if (parsed->opcode != UNISON_WS_OPCODE_BINARY)
 					continue;
-				finlink_msg_type type;
-				if (finlink_peek_type(parsed->payload.data(), parsed->payload.size(), &type) != FINLINK_OK)
+				unison_msg_type type;
+				if (unison_peek_type(parsed->payload.data(), parsed->payload.size(), &type) != UNISON_OK)
 					continue;
-				if (type == FINLINK_MSG_INPUT)
+				if (type == UNISON_MSG_INPUT)
 				{
-					finlink_extended_input input{};
-					if (finlink_parse_extended_input_frame(parsed->payload.data(), parsed->payload.size(), &input) == FINLINK_OK)
+					unison_extended_input input{};
+					if (unison_parse_extended_input_frame(parsed->payload.data(), parsed->payload.size(), &input) == UNISON_OK)
 					{
 						std::lock_guard lock(m_inputMutex);
 						m_latestInput = input;
 					}
 				}
-				else if (type == FINLINK_MSG_TEXT_INPUT_RESPONSE)
+				else if (type == UNISON_MSG_TEXT_INPUT_RESPONSE)
 				{
-					finlink_text_input_response resp{};
-					if (finlink_parse_text_input_response(parsed->payload.data(), parsed->payload.size(), &resp) == FINLINK_OK)
+					unison_text_input_response resp{};
+					if (unison_parse_text_input_response(parsed->payload.data(), parsed->payload.size(), &resp) == UNISON_OK)
 					{
 						std::lock_guard lock(m_textInputMutex);
 						m_textInputResponse = TextInputResult{resp.confirmed != 0, std::string(resp.text, resp.text_len)};
 					}
 				}
-				else if (type == FINLINK_MSG_MIC_AUDIO)
+				else if (type == UNISON_MSG_MIC_AUDIO)
 				{
-					finlink_audio_frame audio{};
-					if (finlink_parse_mic_audio_frame(parsed->payload.data(), parsed->payload.size(), &audio) == FINLINK_OK)
+					unison_audio_frame audio{};
+					if (unison_parse_mic_audio_frame(parsed->payload.data(), parsed->payload.size(), &audio) == UNISON_OK)
 					{
 						std::lock_guard lock(m_micMutex);
-						// PollMicAudio()/FinlinkInputAPI::ConsumeBlock() only
+						// PollMicAudio()/UnisonInputAPI::ConsumeBlock() only
 						// ever see raw sample bytes, not a rate -- they trust
 						// the client to always send at whatever rate the
 						// last MIC_ENABLE requested. Reject anything else
@@ -605,7 +605,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 						// played back as if it were all m_micWantedSampleRate.
 						if (audio.sample_rate != m_micWantedSampleRate)
 							continue;
-						// ~2s cap at typical mic rates -- if FinlinkInputAPI::
+						// ~2s cap at typical mic rates -- if UnisonInputAPI::
 						// ConsumeBlock() ever falls behind that far, drop the
 						// backlog rather than let it grow unboundedly (same
 						// tradeoff SubmitGamepadAudio() makes for the reverse

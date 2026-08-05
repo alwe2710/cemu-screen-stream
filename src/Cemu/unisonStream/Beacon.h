@@ -1,12 +1,12 @@
 #pragma once
 
-// UDP discovery beacon for the WIIU_GAMEPAD finlink stream, so finlink
+// UDP discovery beacon for the WIIU_GAMEPAD Unison stream, so Unison
 // clients (3DS/Switch/Android/web) can find this Cemu instance on the LAN
 // the same way they find an azahar or dolphin-gba-stream instance -- all
-// broadcast the same `finlink_beacon` JSON shape on the same fixed port
-// (finlink/discovery.h's FINLINK_BEACON_PORT), so one client-side listener
+// broadcast the same `unison_beacon` JSON shape on the same fixed port
+// (unison/discovery.h's UNISON_BEACON_PORT), so one client-side listener
 // works against any of them without caring which it's looking at (see
-// finlink docs/protocol.md's "Discovery-Beacon" section). Ported from
+// Unison docs/protocol.md's "Discovery-Beacon" section). Ported from
 // azahar's core/streaming/beacon.h/.cpp: same message shape and broadcast
 // cadence, raw Berkeley sockets (Common/socket.h) instead of boost::asio,
 // matching WiiuGamepadStream.cpp's own networking style.
@@ -16,7 +16,7 @@
 #include <string>
 #include <thread>
 
-namespace Cemu::FinlinkStream
+namespace Cemu::UnisonStream
 {
 
 class Beacon

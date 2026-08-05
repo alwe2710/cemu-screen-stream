@@ -1,13 +1,13 @@
-#include "FinlinkMessages.h"
+#include "UnisonMessages.h"
 
 #include <cstdio>
 #include <cstring>
 #include <sstream>
 
-#include "finlink/handshake.h"
-#include "finlink/json.h"
+#include "unison/handshake.h"
+#include "unison/json.h"
 
-namespace Cemu::FinlinkStream
+namespace Cemu::UnisonStream
 {
 
 namespace
@@ -59,11 +59,11 @@ std::string JsonEscape(const std::string& in)
 }
 
 // whole_object(): the top-level JSON object always spans the entire
-// payload -- finlink_json_find_member() skips leading whitespace itself, so
+// payload -- unison_json_find_member() skips leading whitespace itself, so
 // passing (0, size) directly works without locating the braces by hand.
-finlink_json_span WholeObject(size_t size)
+unison_json_span WholeObject(size_t size)
 {
-	finlink_json_span span;
+	unison_json_span span;
 	span.found = 1;
 	span.start = 0;
 	span.end = size;
@@ -88,7 +88,7 @@ std::string BuildHelloMessage()
 		<< "\"fps\":" << kStreamFps
 		<< "},"
 		// Advisory only, like video above -- the actual sample_rate/channels
-		// of every FINLINK_MSG_AUDIO frame are carried in that frame's own
+		// of every UNISON_MSG_AUDIO frame are carried in that frame's own
 		// header (see ax_out.cpp's AIInitDRCDMA()/WiiuGamepadStream::
 		// SubmitGamepadAudio()), this is just a hint for a client that wants
 		// to prepare its audio pipeline ahead of the first frame.
@@ -104,25 +104,25 @@ std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload)
 		return std::nullopt;
 
 	const char* text = reinterpret_cast<const char*>(payload.data());
-	const finlink_json_span obj = WholeObject(payload.size());
+	const unison_json_span obj = WholeObject(payload.size());
 
 	char message[16];
-	if (finlink_json_get_string(text, finlink_json_find_member(text, obj.start, obj.end, "message"), message, sizeof(message)) == (size_t)-1)
+	if (unison_json_get_string(text, unison_json_find_member(text, obj.start, obj.end, "message"), message, sizeof(message)) == (size_t)-1)
 		return std::nullopt;
 	if (strcmp(message, "hello_ack") != 0)
 		return std::nullopt;
 
-	const finlink_json_span versionSpan = finlink_json_find_member(text, obj.start, obj.end, "protocol_version");
-	const finlink_json_span slotSpan = finlink_json_find_member(text, obj.start, obj.end, "requested_slot");
+	const unison_json_span versionSpan = unison_json_find_member(text, obj.start, obj.end, "protocol_version");
+	const unison_json_span slotSpan = unison_json_find_member(text, obj.start, obj.end, "requested_slot");
 	if (!versionSpan.found || !slotSpan.found)
 		return std::nullopt;
 
 	HandshakeAck ack;
-	ack.protocolVersion = (int)finlink_json_get_number(text, versionSpan);
-	ack.requestedSlot = (int)finlink_json_get_number(text, slotSpan);
+	ack.protocolVersion = (int)unison_json_get_number(text, versionSpan);
+	ack.requestedSlot = (int)unison_json_get_number(text, slotSpan);
 
-	char videoMode[FINLINK_VIDEO_MODE_LEN];
-	if (finlink_json_get_string(text, finlink_json_find_member(text, obj.start, obj.end, "video_mode"), videoMode, sizeof(videoMode)) != (size_t)-1
+	char videoMode[UNISON_VIDEO_MODE_LEN];
+	if (unison_json_get_string(text, unison_json_find_member(text, obj.start, obj.end, "video_mode"), videoMode, sizeof(videoMode)) != (size_t)-1
 		&& (strcmp(videoMode, "legacy") == 0 || strcmp(videoMode, "h264") == 0 || strcmp(videoMode, "h265") == 0))
 		ack.videoMode = videoMode;
 	return ack;

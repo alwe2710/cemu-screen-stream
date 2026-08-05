@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Structural check for the "dual-audio-server" test category (see finlink's
-test-categorization project notes): confirms finlink's GamePad-audio
+"""Structural check for the "dual-audio-server" test category (see Unison's
+test-categorization project notes): confirms Unison's GamePad-audio
 forwarding hook lives *only* inside the DRC (GamePad)-specific audio path
-in ax_out.cpp, never in the TV-specific path -- i.e. a connected finlink
+in ax_out.cpp, never in the TV-specific path -- i.e. a connected Unison
 client only ever intercepts the Wii U GamePad's own audio output, the TV
 output keeps playing locally completely untouched.
 
 This isn't something a runtime unit test can usefully prove: WiiuGamepad
 Stream.cpp pulls in Cafe/HW/Latte/Renderer.h (the GPU renderer) and the rest
 of Cemu's HLE audio mixer, so exercising it for real needs a fully booted
-Wii U title (see finlink's own [[finlink-rom-boot-test-initiative]] memory
+Wii U title (see Unison's own [[unison-rom-boot-test-initiative]] memory
 note -- deferred as a separate initiative). The separation this check cares
 about is architectural, not data-dependent, though: AX_DEV_DRC and AX_DEV_TV
 are two structurally distinct audio devices in Cemu's own AX HLE, submitted
 via two entirely separate functions (AIInitDRCDMA vs.
 AIInitDMA/AXOut_SubmitTVFrame) -- so a static source check of *which
-function* references the finlink hook is a complete, sound proof of the
+function* references the Unison hook is a complete, sound proof of the
 "only GamePad audio, TV unaffected" property, no execution required.
 
-Exit code is non-zero (with the offending line printed) if a finlink/
-Cemu::FinlinkStream reference is ever found inside a TV-audio function, or
-if the DRC-audio function stops referencing finlink at all (the mirror-image
+Exit code is non-zero (with the offending line printed) if a unison/
+Cemu::UnisonStream reference is ever found inside a TV-audio function, or
+if the DRC-audio function stops referencing Unison at all (the mirror-image
 mistake: the hook silently regressing away).
 """
 import re
@@ -30,20 +30,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 AX_OUT_CPP = REPO_ROOT / "src" / "Cafe" / "OS" / "libs" / "snd_core" / "ax_out.cpp"
 
-# Deliberately the specific load-bearing symbol, not a loose "Finlink"
-# substring match: AIInitDRCDMA's own "consumedByFinlink" local variable
-# name contains "Finlink" too, which would make a substring match falsely
+# Deliberately the specific load-bearing symbol, not a loose "Unison"
+# substring match: AIInitDRCDMA's own "consumedByUnison" local variable
+# name contains "Unison" too, which would make a substring match falsely
 # still pass even with the actual g_wiiuGamepadStream/SubmitGamepadAudio()
 # call removed and only that now-inert bool left behind (caught by this
 # script's own regression-injection self-test during development).
-FINLINK_RE = re.compile(r"g_wiiuGamepadStream|SubmitGamepadAudio")
+UNISON_RE = re.compile(r"g_wiiuGamepadStream|SubmitGamepadAudio")
 
-# (function name, must reference finlink?) -- ax_out.cpp's own function
+# (function name, must reference Unison?) -- ax_out.cpp's own function
 # names for each audio device's submit path, see the module docstring.
 FUNCTIONS = [
     ("AIInitDMA", False),        # TV audio (mono/stereo path)
     ("AXOut_SubmitTVFrame", False),
-    ("AIInitDRCDMA", True),      # GamePad audio -- finlink's hook belongs here
+    ("AIInitDRCDMA", True),      # GamePad audio -- Unison's hook belongs here
     ("AXOut_SubmitDRCFrame", False),  # feeds AIInitDRCDMA, no hook of its own
 ]
 
@@ -106,20 +106,20 @@ def main() -> int:
     bodies = extract_function_bodies(text)
 
     failures = []
-    for name, should_reference_finlink in FUNCTIONS:
+    for name, should_reference_unison in FUNCTIONS:
         body = bodies.get(name)
         if body is None:
             failures.append(f"{name}: function not found in {AX_OUT_CPP} (renamed/removed upstream?)")
             continue
-        references_finlink = bool(FINLINK_RE.search(strip_comments(body)))
-        if references_finlink and not should_reference_finlink:
+        references_unison = bool(UNISON_RE.search(strip_comments(body)))
+        if references_unison and not should_reference_unison:
             failures.append(
-                f"{name}: references finlink but is a TV-audio path -- "
-                f"a connected finlink client must never intercept TV audio, only GamePad/DRC audio"
+                f"{name}: references Unison but is a TV-audio path -- "
+                f"a connected Unison client must never intercept TV audio, only GamePad/DRC audio"
             )
-        if should_reference_finlink and not references_finlink:
+        if should_reference_unison and not references_unison:
             failures.append(
-                f"{name}: expected to reference finlink (this is where GamePad-audio forwarding "
+                f"{name}: expected to reference Unison (this is where GamePad-audio forwarding "
                 f"hooks in) but doesn't -- did the hook get moved or dropped?"
             )
 
@@ -129,7 +129,7 @@ def main() -> int:
             print(f"  - {failure}")
         return 1
 
-    print(f"OK: finlink's GamePad-audio hook is confined to AIInitDRCDMA, TV audio path is untouched.")
+    print(f"OK: Unison's GamePad-audio hook is confined to AIInitDRCDMA, TV audio path is untouched.")
     return 0
 
 

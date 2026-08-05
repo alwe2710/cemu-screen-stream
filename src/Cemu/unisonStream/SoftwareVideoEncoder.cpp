@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace Cemu::FinlinkStream
+namespace Cemu::UnisonStream
 {
 
 namespace
@@ -41,7 +41,7 @@ constexpr int kTargetBitrateKbps = 4000;
 // entire second's bitrate budget into one of them -- a burst the network/
 // decoder still has to absorb all at once, which showed up as a
 // backlog recurring in lockstep with the keyframe interval (see
-// jni_bridge.c's "finlink video decode backlog" diagnostic). A ~125ms
+// jni_bridge.c's "Unison video decode backlog" diagnostic). A ~125ms
 // buffer (2-3 frame periods at 20fps) instead forces the rate controller
 // to keep even keyframes close to the average frame size, trading a
 // slightly softer keyframe for never spiking the instantaneous rate.
@@ -85,7 +85,7 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		// mostly-static menu) can spike well past what a real Wi-Fi link
 		// sustains in real time -- data then queues up and arrives in
 		// bursts, which is exactly the decode-side backlog (see
-		// jni_bridge.c's "finlink video decode backlog" diagnostic)
+		// jni_bridge.c's "Unison video decode backlog" diagnostic)
 		// observed specifically once gameplay -- not simpler screens --
 		// started rendering. kTargetBitrateKbps is deliberately
 		// conservative for this resolution/frame rate, leaving real margin

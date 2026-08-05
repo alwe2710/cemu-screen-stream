@@ -7,7 +7,7 @@
 #include "util/helpers/helpers.h"
 
 #include "Cafe/OS/libs/snd_core/ax.h"
-#include "Cemu/finlinkStream/WiiuGamepadStream.h"
+#include "Cemu/unisonStream/WiiuGamepadStream.h"
 
 #include <wx/collpane.h>
 #include <wx/clrpicker.h>
@@ -642,16 +642,16 @@ wxPanel* GeneralSettings2::AddAudioPage(wxNotebook* notebook)
 		box_sizer->Add(audio_pad_row, 1, wxEXPAND, 5);
 		audio_panel_sizer->Add(box_sizer, 0, wxEXPAND | wxALL, 5);
 
-		// While a finlink client is connected, GamePad audio plays
+		// While a Unison client is connected, GamePad audio plays
 		// exclusively on that client (see ax_out.cpp's AIInitDRCDMA()) --
 		// the local device/channel choice has no effect in that state, so
 		// gray it out rather than leave a setting that silently does
 		// nothing. Snapshotted once here at dialog-construction time, same
 		// as m_game_launched above: this dialog isn't live-updated while
 		// open.
-		if (Cemu::FinlinkStream::g_wiiuGamepadStream && Cemu::FinlinkStream::g_wiiuGamepadStream->IsActive())
+		if (Cemu::UnisonStream::g_wiiuGamepadStream && Cemu::UnisonStream::g_wiiuGamepadStream->IsActive())
 		{
-			const wxString reason = _("Disabled while a finlink client is connected: GamePad audio plays exclusively on that client.");
+			const wxString reason = _("Disabled while a Unison client is connected: GamePad audio plays exclusively on that client.");
 			m_pad_device->Disable();
 			m_pad_device->SetToolTip(reason);
 			m_pad_channels->Disable();
@@ -699,17 +699,17 @@ wxPanel* GeneralSettings2::AddAudioPage(wxNotebook* notebook)
 		box_sizer->Add(audio_input_row, 1, wxEXPAND, 5);
 		audio_panel_sizer->Add(box_sizer, 0, wxEXPAND | wxALL, 5);
 
-		// Whenever finlink GamePad streaming is enabled (not just while a
+		// Whenever Unison GamePad streaming is enabled (not just while a
 		// client is actually connected -- same g_wiiuGamepadStream
 		// non-null check as the GamePad-output block above), the mic is
-		// forcibly sourced from the Finlink Remote Microphone device
+		// forcibly sourced from the Unison Remote Microphone device
 		// regardless of this setting (see mic.cpp's micExport_MICInit()),
 		// so gray it out rather than leave a local-device choice that
 		// silently has no effect. Snapshotted once here at dialog-
 		// construction time, same as the GamePad-output block.
-		if (Cemu::FinlinkStream::g_wiiuGamepadStream)
+		if (Cemu::UnisonStream::g_wiiuGamepadStream)
 		{
-			const wxString reason = _("Disabled while finlink streaming is enabled: the microphone is forced to the Finlink Remote Microphone.");
+			const wxString reason = _("Disabled while Unison streaming is enabled: the microphone is forced to the Unison Remote Microphone.");
 			m_input_device->Disable();
 			m_input_device->SetToolTip(reason);
 			m_input_channels->Disable();
@@ -1079,20 +1079,20 @@ wxPanel* GeneralSettings2::AddDebugPage(wxNotebook* notebook)
 	}
 
 	{
-		auto* finlink_row = new wxFlexGridSizer(0, 2, 0, 0);
-		finlink_row->SetFlexibleDirection(wxBOTH);
-		finlink_row->SetNonFlexibleGrowMode(wxFLEX_GROWMODE_SPECIFIED);
+		auto* unison_row = new wxFlexGridSizer(0, 2, 0, 0);
+		unison_row->SetFlexibleDirection(wxBOTH);
+		unison_row->SetNonFlexibleGrowMode(wxFLEX_GROWMODE_SPECIFIED);
 
-		m_finlink_enabled = new wxCheckBox(panel, wxID_ANY, _("Enable GamePad streaming (finlink)"));
-		m_finlink_enabled->SetToolTip(_("Streams the emulated GamePad screen to a remote finlink client over the network and accepts touch input back. Forces a Vulkan renderer while active."));
-		finlink_row->Add(m_finlink_enabled, 0, wxALL | wxEXPAND, 5);
-		finlink_row->AddSpacer(0);
+		m_unison_enabled = new wxCheckBox(panel, wxID_ANY, _("Enable GamePad streaming (Unison)"));
+		m_unison_enabled->SetToolTip(_("Streams the emulated GamePad screen to a remote Unison client over the network and accepts touch input back. Forces a Vulkan renderer while active."));
+		unison_row->Add(m_unison_enabled, 0, wxALL | wxEXPAND, 5);
+		unison_row->AddSpacer(0);
 
-		finlink_row->Add(new wxStaticText(panel, wxID_ANY, _("finlink port")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
-		m_finlink_port = new wxSpinCtrl(panel, wxID_ANY, "6840", wxDefaultPosition, wxDefaultSize, 0, 1000, 65535);
-		finlink_row->Add(m_finlink_port, 0, wxALL | wxEXPAND, 5);
+		unison_row->Add(new wxStaticText(panel, wxID_ANY, _("Unison port")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+		m_unison_port = new wxSpinCtrl(panel, wxID_ANY, "6840", wxDefaultPosition, wxDefaultSize, 0, 1000, 65535);
+		unison_row->Add(m_unison_port, 0, wxALL | wxEXPAND, 5);
 
-		debug_panel_sizer->Add(finlink_row, 0, wxALL | wxEXPAND, 5);
+		debug_panel_sizer->Add(unison_row, 0, wxALL | wxEXPAND, 5);
 	}
 
 #ifdef ENABLE_METAL
@@ -1350,8 +1350,8 @@ void GeneralSettings2::StoreConfig()
 	// debug
 	config.crash_dump = (CrashDump)m_crash_dump->GetSelection();
 	config.gdb_port = m_gdb_port->GetValue();
-	config.finlink_enabled = m_finlink_enabled->IsChecked();
-	config.finlink_port = m_finlink_port->GetValue();
+	config.unison_enabled = m_unison_enabled->IsChecked();
+	config.unison_port = m_unison_port->GetValue();
 #ifdef ENABLE_METAL
 	config.gpu_capture_dir = m_gpu_capture_dir->GetValue().utf8_string();
 	config.framebuffer_fetch = m_framebuffer_fetch->IsChecked();
@@ -1504,15 +1504,15 @@ void GeneralSettings2::UpdateAudioDeviceList()
 		m_input_device->Append(device->GetName(), new wxInputDeviceDescription(input_audio_api, device));
 	}
 
-	// Finlink Remote Microphone -- always listed alongside whatever real
+	// Unison Remote Microphone -- always listed alongside whatever real
 	// Cubeb devices exist above, exactly like Azahar's own
-	// "Finlink Remote Microphone" AudioCore::Input entry: one more
+	// "Unison Remote Microphone" AudioCore::Input entry: one more
 	// selectable device, not a separate API picker (there isn't one in this
 	// UI, see input_audio_api's own comment above).
-	if (IAudioInputAPI::IsAudioInputAPIAvailable(IAudioInputAPI::Finlink))
+	if (IAudioInputAPI::IsAudioInputAPIAvailable(IAudioInputAPI::Unison))
 	{
-		for (auto& device : IAudioInputAPI::GetDevices(IAudioInputAPI::Finlink))
-			m_input_device->Append(device->GetName(), new wxInputDeviceDescription(IAudioInputAPI::Finlink, device));
+		for (auto& device : IAudioInputAPI::GetDevices(IAudioInputAPI::Unison))
+			m_input_device->Append(device->GetName(), new wxInputDeviceDescription(IAudioInputAPI::Unison, device));
 	}
 
 	if(m_tv_device->GetCount() > 1)
@@ -2123,8 +2123,8 @@ void GeneralSettings2::ApplyConfig()
 	// debug
 	m_crash_dump->SetSelection((int)config.crash_dump.GetValue());
 	m_gdb_port->SetValue(config.gdb_port.GetValue());
-	m_finlink_enabled->SetValue(config.finlink_enabled.GetValue());
-	m_finlink_port->SetValue(config.finlink_port.GetValue());
+	m_unison_enabled->SetValue(config.unison_enabled.GetValue());
+	m_unison_port->SetValue(config.unison_port.GetValue());
 #ifdef ENABLE_METAL
 	m_gpu_capture_dir->SetValue(wxString::FromUTF8(config.gpu_capture_dir.GetValue()));
 	m_framebuffer_fetch->SetValue(config.framebuffer_fetch);

@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace Cemu::FinlinkStream
+namespace Cemu::UnisonStream
 {
 
 enum class VideoCodec
@@ -12,7 +12,7 @@ enum class VideoCodec
 	H265,
 };
 
-// Software H.264/H265 encoder (libx264/libx265) for the finlink WIIU_GAMEPAD
+// Software H.264/H265 encoder (libx264/libx265) for the Unison WIIU_GAMEPAD
 // stream -- session-local, like WiiuGamepadStream::RunSession()'s other
 // per-session state (lastSentFrameRgb565 etc.): constructed fresh per
 // session and destroyed at session end, so encoder/decoder reference-frame
@@ -26,7 +26,7 @@ enum class VideoCodec
 class SoftwareVideoEncoder
 {
 public:
-	// fps is the *effective* capture rate finlink actually sends at
+	// fps is the *effective* capture rate Unison actually sends at
 	// (WiiuGamepadStream's kMinCaptureInterval-throttled rate, not the
 	// console's own nominal output rate) -- used for encoder rate-control
 	// pacing and to derive the forced-keyframe interval, not treated as a
@@ -56,8 +56,8 @@ public:
 	// Encodes one RGBA8 frame (width*height*4 bytes, same layout
 	// WiiuGamepadStream's m_latestFrameRgba already uses) into outNals --
 	// an Annex-B byte stream (one or more NAL units, start-code prefixed),
-	// ready to drop straight into a FINLINK_MSG_VIDEO frame's
-	// compressed_data with FINLINK_VIDEO_FORMAT_H264/_H265 set. Returns
+	// ready to drop straight into a UNISON_MSG_VIDEO frame's
+	// compressed_data with UNISON_VIDEO_FORMAT_H264/_H265 set. Returns
 	// false only on a real encoder error (caller should treat this the
 	// same as SendVideoFrame()'s other "skip this frame" cases) -- an
 	// encode call that legitimately produces no output yet (encoder

@@ -73,8 +73,8 @@ public:
 
 	virtual void HandleScreenshotRequest(LatteTextureView* texView, bool padView){}
 
-	// Continuous, backend-specific readback for the finlink WIIU_GAMEPAD
-	// stream (Cemu/finlinkStream/WiiuGamepadStream.cpp) -- unlike
+	// Continuous, backend-specific readback for the Unison WIIU_GAMEPAD
+	// stream (Cemu/unisonStream/WiiuGamepadStream.cpp) -- unlike
 	// HandleScreenshotRequest above (one-shot, user-triggered, saves a PNG),
 	// this is polled every DRC frame while a remote client is attached, and
 	// must return quickly-ish since callers keep the render thread until it

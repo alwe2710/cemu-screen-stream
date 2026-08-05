@@ -3,15 +3,15 @@ add_library(CemuComponents
   ExpressionParser/ExpressionParser.h
   FileCache/FileCache.cpp
   FileCache/FileCache.h
-  finlinkStream/Beacon.cpp
-  finlinkStream/Beacon.h
-  finlinkStream/FinlinkMessages.cpp
-  finlinkStream/FinlinkMessages.h
-  finlinkStream/FinlinkWebSocket.h
-  finlinkStream/SoftwareVideoEncoder.cpp
-  finlinkStream/SoftwareVideoEncoder.h
-  finlinkStream/WiiuGamepadStream.cpp
-  finlinkStream/WiiuGamepadStream.h
+  unisonStream/Beacon.cpp
+  unisonStream/Beacon.h
+  unisonStream/UnisonMessages.cpp
+  unisonStream/UnisonMessages.h
+  unisonStream/UnisonWebSocket.h
+  unisonStream/SoftwareVideoEncoder.cpp
+  unisonStream/SoftwareVideoEncoder.h
+  unisonStream/WiiuGamepadStream.cpp
+  unisonStream/WiiuGamepadStream.h
   Logging/CemuDebugLogging.h
   Logging/CemuLogging.cpp
   Logging/CemuLogging.h
@@ -57,7 +57,7 @@ target_include_directories(CemuComponents PUBLIC "../")
 target_link_libraries(CemuComponents PRIVATE
 	CemuCommon
   CemuGui
-  finlink_core
+  unison_core
   OpenSSL::Crypto
   x264::x264
   x265::x265

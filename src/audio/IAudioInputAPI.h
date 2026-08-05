@@ -29,11 +29,11 @@ public:
 	enum AudioInputAPI
 	{
 		Cubeb,
-		// GamePad microphone sourced from a connected finlink client's own
+		// GamePad microphone sourced from a connected Unison client's own
 		// real microphone instead of a host device -- see
-		// src/audio/FinlinkInputAPI.h. Always available (no host
+		// src/audio/UnisonInputAPI.h. Always available (no host
 		// device/library dependency), unlike Cubeb.
-		Finlink,
+		Unison,
 
 		AudioInputAPIEnd,
 	};

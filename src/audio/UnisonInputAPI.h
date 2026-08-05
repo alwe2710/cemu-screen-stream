@@ -2,27 +2,27 @@
 
 #include "IAudioInputAPI.h"
 
-// Sources the Wii U GamePad microphone from a connected finlink client's own
-// real microphone (src/Cemu/finlinkStream/WiiuGamepadStream.h) instead of a
+// Sources the Wii U GamePad microphone from a connected Unison client's own
+// real microphone (src/Cemu/unisonStream/WiiuGamepadStream.h) instead of a
 // host device -- selectable in General Settings exactly like a Cubeb device,
 // see GeneralSettings2.cpp's UpdateAudioDeviceList(). ConsumeBlock() returns
 // silence whenever no client is connected or none has sent anything yet,
 // mirroring CubebInputAPI's own "no data buffered yet" behavior -- there's
 // no error state here, just "nothing available right now".
-class FinlinkInputAPI : public IAudioInputAPI
+class UnisonInputAPI : public IAudioInputAPI
 {
 public:
-	class FinlinkDeviceDescription : public DeviceDescription
+	class UnisonDeviceDescription : public DeviceDescription
 	{
 	public:
-		FinlinkDeviceDescription() : DeviceDescription(L"Finlink Remote Microphone") {}
-		std::wstring GetIdentifier() const override { return L"finlink"; }
+		UnisonDeviceDescription() : DeviceDescription(L"Unison Remote Microphone") {}
+		std::wstring GetIdentifier() const override { return L"Unison"; }
 	};
 
-	FinlinkInputAPI(uint32 samplerate, uint32 channels, uint32 samples_per_block, uint32 bits_per_sample);
-	~FinlinkInputAPI() override;
+	UnisonInputAPI(uint32 samplerate, uint32 channels, uint32 samples_per_block, uint32 bits_per_sample);
+	~UnisonInputAPI() override;
 
-	AudioInputAPI GetType() const override { return Finlink; }
+	AudioInputAPI GetType() const override { return Unison; }
 
 	bool ConsumeBlock(sint16* data) override;
 	bool Play() override;
