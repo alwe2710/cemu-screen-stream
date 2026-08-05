@@ -146,6 +146,30 @@ void Beacon::Run()
 	int broadcastEnabled = 1;
 	setsockopt(sock, SOL_SOCKET, SO_BROADCAST, (const char*)&broadcastEnabled, sizeof(broadcastEnabled));
 
+	// Bind to the specific interface m_localHost resolved to (see
+	// ProbeLocalHost() above) before sending. On a machine with more than
+	// one active network interface (VPN, Docker/virtual adapters, Ethernet
+	// + Wi-Fi both up -- not unusual for a dev/gaming PC), leaving the
+	// socket unbound lets the OS pick whichever interface its default route
+	// for 255.255.255.255 happens to be, not necessarily the one a
+	// discovering client (e.g. a 3DS on Wi-Fi) is actually reachable on --
+	// the broadcast can leave via a completely different interface than the
+	// LAN the client is listening on, silently going nowhere a client will
+	// ever see. Binding pins the send to the interface m_localHost itself
+	// already names, which is also the address embedded in the beacon
+	// message clients use to connect back -- if that address weren't
+	// reachable, nothing would work regardless, so this can't make things
+	// worse than before. Best-effort: bind()'s return value is ignored, same
+	// reasoning as the sendto() below.
+	if (!m_localHost.empty())
+	{
+		sockaddr_in bindAddr{};
+		bindAddr.sin_family = AF_INET;
+		bindAddr.sin_port = 0;
+		bindAddr.sin_addr.s_addr = inet_addr(m_localHost.c_str());
+		bind(sock, (sockaddr*)&bindAddr, sizeof(bindAddr));
+	}
+
 	sockaddr_in broadcastAddr{};
 	broadcastAddr.sin_family = AF_INET;
 	broadcastAddr.sin_port = htons(UNISON_BEACON_PORT);
