@@ -53,6 +53,17 @@ public:
 	uint32_t CodedWidth() const { return m_codedWidth; }
 	uint32_t CodedHeight() const { return m_codedHeight; }
 
+	// The *display* (constructor-argument) size this encoder was actually
+	// built for -- EncodeFrame() blindly trusts every rgba8 buffer it's
+	// given to be exactly width*height*4 bytes in this stride, it never
+	// re-reads the size from anywhere else. WiiuGamepadStream::SendVideoFrame()
+	// must compare a given frame's real captured width/height against this
+	// before calling EncodeFrame() (and rebuild this encoder if they differ)
+	// -- see that function's own comment on why they can legitimately differ
+	// frame to frame.
+	uint32_t Width() const { return m_width; }
+	uint32_t Height() const { return m_height; }
+
 	// Encodes one RGBA8 frame (width*height*4 bytes, same layout
 	// WiiuGamepadStream's m_latestFrameRgba already uses) into outNals --
 	// an Annex-B byte stream (one or more NAL units, start-code prefixed),

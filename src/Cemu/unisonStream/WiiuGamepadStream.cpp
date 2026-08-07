@@ -86,16 +86,55 @@ void ConvertRgba8ToRgb565(const uint8_t* rgba8, int width, int height, std::vect
 // having sent nothing.
 // videoMode comes from the client's hello_ack.video_mode (UnisonMessages.h's
 // HandshakeAck): "h264"/"h265" use videoEncoder (RunSession's session-local
-// SoftwareVideoEncoder, non-null and IsValid() only when that mode was
-// actually negotiated and construction succeeded -- falls through to the
-// TILES path below otherwise, a safe default rather than sending nothing);
-// "legacy" always sends a full, non-tiled, non-deduped frame (the original,
-// pre-TILES behavior, kept as a user-selectable fallback); anything else
-// uses the TILES delta-encoding + dedup path.
+// SoftwareVideoEncoder, own by reference here -- see this function's own
+// resolution-change handling below for why it's (re)built in here rather
+// than once up front in RunSession); "legacy" always sends a full,
+// non-tiled, non-deduped frame (the original, pre-TILES behavior, kept as a
+// user-selectable fallback); anything else uses the TILES delta-encoding +
+// dedup path.
+//
+// width/height are THIS frame's real captured DRC content size, not
+// necessarily the fixed 854x480 every other stream type/mode here assumes
+// -- LatteRenderTarget_itHLECopyColorBufferToScanBuffer() (LatteRenderTarget.cpp)
+// builds the captured texture from whatever colorBufferWidth/Height the
+// *game itself* used for that particular scan-buffer copy, which a title is
+// free to vary per DRC content (confirmed for Wind Waker HD: its GamePad
+// item-picker screen renders at a different size than the full
+// TV-mirrored-to-GamePad view Select toggles to). The TILES/legacy paths
+// below already use width/height correctly, dynamically, every call --
+// SoftwareVideoEncoder used to be the one exception, built once in
+// RunSession with the fixed 854x480 constants and never revisited:
+// EncodeFrame() would then blindly read width*height*4 bytes assuming its
+// own, possibly stale, construction-time stride, silently misinterpreting
+// (at best) or reading past the end of (at worst) whatever the real,
+// differently-sized rgba8 buffer for that frame actually was -- confirmed
+// live as the cause of h264/h265 showing nothing at all while Wind Waker
+// HD's GamePad was on the item-picker screen (only the TV-mirrored view
+// happens to match 854x480). Fixed by (re)constructing videoEncoder
+// in-place whenever this frame's width/height don't match its current
+// Width()/Height(), same as a resolution change on a first connect.
 bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int height,
                     std::vector<uint8_t>& lastSentRgb565, const std::string& videoMode,
-                    SoftwareVideoEncoder* videoEncoder, const std::atomic_bool& stop)
+                    std::unique_ptr<SoftwareVideoEncoder>& videoEncoder, uint32_t encoderFps,
+                    const std::atomic_bool& stop)
 {
+	if (videoMode == "h264" || videoMode == "h265")
+	{
+		// (Re)build whenever there's no encoder yet (first frame this
+		// session) or this frame's real captured size no longer matches
+		// what the current one was built for (a DRC content change, e.g.
+		// Wind Waker HD's item-picker vs. its TV-mirrored view) -- see this
+		// function's own top comment. A rebuild means a fresh encoder
+		// context (no reference-frame state carried over, same as a new
+		// session), which SendWebSocketBinaryFrame naturally surfaces as a
+		// forced keyframe on this codec's very next EncodeFrame() call.
+		if (!videoEncoder || videoEncoder->Width() != (uint32_t)width || videoEncoder->Height() != (uint32_t)height)
+		{
+			videoEncoder = std::make_unique<SoftwareVideoEncoder>(
+				videoMode == "h264" ? VideoCodec::H264 : VideoCodec::H265, (uint32_t)width, (uint32_t)height, encoderFps);
+		}
+	}
+
 	if ((videoMode == "h264" || videoMode == "h265") && videoEncoder && videoEncoder->IsValid())
 	{
 		std::vector<uint8_t> nals;
@@ -427,19 +466,20 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 	// the start of every new session rather than persisting across
 	// reconnects.
 	std::vector<uint8_t> lastSentFrameRgb565;
-	// Session-local H.264/H265 encoder (only constructed for those two
-	// modes) -- fresh per session, same reasoning as lastSentFrameRgb565
-	// above: encoder/decoder reference-frame state must never cross
-	// sessions. Effective fps is this stream's real, throttled capture
-	// rate (kMinCaptureInterval), not the console's nominal output rate
-	// (kStreamFps) -- see SoftwareVideoEncoder's own constructor comment.
+	// Session-local H.264/H265 encoder (only ever used for those two modes)
+	// -- fresh per session, same reasoning as lastSentFrameRgb565 above:
+	// encoder/decoder reference-frame state must never cross sessions.
+	// Left null here (rather than eagerly constructed against the fixed
+	// kStreamWidth/kStreamHeight, as this used to do) -- SendVideoFrame()
+	// now (re)builds it lazily, against whichever real per-frame width/
+	// height it's actually given, the first time it's needed and again on
+	// any later resolution change; see that function's own comment on why
+	// a fixed size here was wrong. Effective fps is this stream's real,
+	// throttled capture rate (kMinCaptureInterval), not the console's
+	// nominal output rate (kStreamFps) -- see SoftwareVideoEncoder's own
+	// constructor comment.
 	std::unique_ptr<SoftwareVideoEncoder> videoEncoder;
-	if (videoMode == "h264" || videoMode == "h265")
-	{
-		const uint32_t fps = (uint32_t)(1000 / kMinCaptureInterval.count());
-		videoEncoder = std::make_unique<SoftwareVideoEncoder>(
-			videoMode == "h264" ? VideoCodec::H264 : VideoCodec::H265, kStreamWidth, kStreamHeight, fps);
-	}
+	const uint32_t encoderFps = (uint32_t)(1000 / kMinCaptureInterval.count());
 	// Edge-detection for the mic-enable signal -- session-local (not a
 	// member), same reasoning as lastSentFrameId above. Starts at "not
 	// wanted" so a session that begins with a mic already wanted (the game
@@ -467,7 +507,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 		}
 		if (!frameCopy.empty())
 		{
-			if (!SendVideoFrame(fd, frameCopy, width, height, lastSentFrameRgb565, videoMode, videoEncoder.get(), m_stop))
+			if (!SendVideoFrame(fd, frameCopy, width, height, lastSentFrameRgb565, videoMode, videoEncoder, encoderFps, m_stop))
 				return;
 			lastSentFrameId = currentId;
 		}
