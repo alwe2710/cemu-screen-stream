@@ -68,6 +68,22 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		x264_param_t param;
 		if (x264_param_default_preset(&param, "ultrafast", "zerolatency") != 0)
 			return;
+		// Force single-threaded encoding. "zerolatency" disables frame-
+		// threading (it inherently adds latency -- you need N frames in
+		// flight for N threads), so x264 falls back to auto-detecting the
+		// host's CPU count and using real SLICE-based threading instead --
+		// splitting one picture into multiple separate slice NALs, one per
+		// thread. Confirmed live: New3DS's MVD hardware decoder accepts the
+		// first two slices fine (MVD_STATUS_INCOMPLETEPROCESSING) but
+		// returns an undocumented status code on the third and crashes the
+		// whole mvd sysmodule processing a fourth, rather than correctly
+		// handling a multi-slice picture -- every client this project
+		// ships assumes one NAL per picture (docs/protocol.md's Annex-B
+		// framing was never designed around multi-slice pictures). Losing
+		// x264's own slice-parallel speedup costs some encode-side
+		// headroom, but every client gets the simpler, single-slice-per-
+		// picture stream this produces, not just the 3DS.
+		param.i_threads = 1;
 		param.i_width = (int)m_codedWidth;
 		param.i_height = (int)m_codedHeight;
 		param.i_fps_num = m_fps;
