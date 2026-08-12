@@ -95,6 +95,26 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		// not only session start.
 		param.b_repeat_headers = 1;
 		param.b_annexb = 1;
+		// ConvertRgba8ToI420()'s own comment calls its RGB->YUV math
+		// "full-swing" (full-range, Y/Cb/Cr spanning the whole 0-255 byte
+		// range) -- but until now nothing told the bitstream that. Per the
+		// H.264 spec, a decoder that finds no VUI color-description info at
+		// all defaults to LIMITED (studio/TV, 16-235) range, so any
+		// spec-compliant decoder was stretching an already-full-range
+		// signal as if it still had headroom to expand -- reported live as
+		// an "oversaturated"/too-contrasty image on iOS's VideoToolbox
+		// decoder (CompressedVideoDecoder.swift), which -- unlike some
+		// software decoders that happen to guess permissively -- actually
+		// follows the spec's default here. i_colorprim/i_transfer/
+		// i_colmatrix = 6 (SMPTE170M, i.e. ITU-R BT.601) matches
+		// ConvertRgba8ToI420()'s own coefficients (0.299/0.587/0.114)
+		// exactly, rather than leaving those at x264's own default
+		// (2 = unspecified), so every decoder now gets the same explicit,
+		// correct answer instead of guessing at all three independently.
+		param.vui.b_fullrange = 1;
+		param.vui.i_colorprim = 6;
+		param.vui.i_transfer = 6;
+		param.vui.i_colmatrix = 6;
 		// Capped bitrate (ABR + a VBV ceiling at the same rate), not CRF:
 		// CRF targets a *quality* level with no bound on the resulting
 		// bitrate, so a busy/fast-changing scene (real gameplay, vs. a
@@ -141,6 +161,15 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		param->keyframeMax = (int)m_keyframeInterval;
 		param->bRepeatHeaders = 1;
 		param->internalCsp = X265_CSP_I420;
+		// Same full-range/BT.601 VUI signaling as the H.264 branch above,
+		// same reasoning (its own comment) -- ConvertRgba8ToI420()'s
+		// full-range output was never being declared as such.
+		param->vui.bEnableVideoSignalTypePresentFlag = 1;
+		param->vui.bEnableVideoFullRangeFlag = 1;
+		param->vui.bEnableColorDescriptionPresentFlag = 1;
+		param->vui.colorPrimaries = 6;
+		param->vui.transferCharacteristics = 6;
+		param->vui.matrixCoeffs = 6;
 		// Same reasoning as the H.264 branch above: capped bitrate, not CRF.
 		param->rc.rateControlMode = X265_RC_ABR;
 		param->rc.bitrate = kTargetBitrateKbps;
