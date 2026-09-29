@@ -31,7 +31,13 @@ public:
 	// console's own nominal output rate) -- used for encoder rate-control
 	// pacing and to derive the forced-keyframe interval, not treated as a
 	// hard per-frame clock (real capture is variable-rate/dedup-skipped).
-	SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uint32_t height, uint32_t fps);
+	//
+	// bitrateKbps is the ABR target + VBV cap (see the .cpp's own "not CRF"
+	// comment) -- CemuConfig's unison_bitrate_kbps, user-adjustable in
+	// General Settings' Debug tab. Clamped to a sane minimum here (not by
+	// the caller) since an encoder opened with a degenerately low bitrate
+	// can fail outright rather than just look bad.
+	SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uint32_t height, uint32_t fps, uint32_t bitrateKbps);
 	~SoftwareVideoEncoder();
 
 	SoftwareVideoEncoder(const SoftwareVideoEncoder&) = delete;

@@ -103,6 +103,7 @@ private:
 	wxSpinCtrl* m_gdb_port;
 	wxCheckBox* m_unison_enabled;
 	wxSpinCtrl* m_unison_port;
+	wxSpinCtrl* m_unison_bitrate_kbps;
 #ifdef ENABLE_METAL
 	wxTextCtrl* m_gpu_capture_dir;
 	wxCheckBox* m_framebuffer_fetch;

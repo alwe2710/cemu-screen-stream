@@ -1087,6 +1087,11 @@ wxPanel* GeneralSettings2::AddDebugPage(wxNotebook* notebook)
 		m_unison_port = new wxSpinCtrl(panel, wxID_ANY, "6840", wxDefaultPosition, wxDefaultSize, 0, 1000, 65535);
 		unison_row->Add(m_unison_port, 0, wxALL | wxEXPAND, 5);
 
+		unison_row->Add(new wxStaticText(panel, wxID_ANY, _("Unison video bitrate (kbps)")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+		m_unison_bitrate_kbps = new wxSpinCtrl(panel, wxID_ANY, "4000", wxDefaultPosition, wxDefaultSize, 0, 250, 20000);
+		m_unison_bitrate_kbps->SetToolTip(_("Target bitrate for the GamePad streaming video encoder. Lower values reduce picture quality but also reduce how much a remote client has to decode per frame -- useful if the client's own decoder (not the network) is the bottleneck. Only takes effect on the next connection or GamePad resolution change, not immediately on an already-streaming session."));
+		unison_row->Add(m_unison_bitrate_kbps, 0, wxALL | wxEXPAND, 5);
+
 		debug_panel_sizer->Add(unison_row, 0, wxALL | wxEXPAND, 5);
 	}
 
@@ -1350,6 +1355,7 @@ void GeneralSettings2::StoreConfig()
 	config.gdb_port = m_gdb_port->GetValue();
 	config.unison_enabled = m_unison_enabled->IsChecked();
 	config.unison_port = m_unison_port->GetValue();
+	config.unison_bitrate_kbps = (uint32)m_unison_bitrate_kbps->GetValue();
 #ifdef ENABLE_METAL
 	config.gpu_capture_dir = m_gpu_capture_dir->GetValue().utf8_string();
 	config.framebuffer_fetch = m_framebuffer_fetch->IsChecked();
@@ -2148,6 +2154,7 @@ void GeneralSettings2::ApplyConfig()
 	m_gdb_port->SetValue(config.gdb_port.GetValue());
 	m_unison_enabled->SetValue(config.unison_enabled.GetValue());
 	m_unison_port->SetValue(config.unison_port.GetValue());
+	m_unison_bitrate_kbps->SetValue((int)config.unison_bitrate_kbps.GetValue());
 #ifdef ENABLE_METAL
 	m_gpu_capture_dir->SetValue(wxString::FromUTF8(config.gpu_capture_dir.GetValue()));
 	m_framebuffer_fetch->SetValue(config.framebuffer_fetch);

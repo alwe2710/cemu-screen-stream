@@ -521,6 +521,16 @@ struct CemuConfig
 	// gdb_port above.
 	ConfigValue<bool> unison_enabled{ false };
 	ConfigValue<uint16> unison_port{ 6840 };
+	// Target bitrate (kbps) for the H.264/H.265 encoder the WIIU_GAMEPAD
+	// video/audio (UDP) channel uses -- see SoftwareVideoEncoder's own "not
+	// CRF" comment for why this is an ABR target+VBV cap rather than a
+	// quality level. 4000 matches the value this was hardcoded to before
+	// becoming configurable, so an existing config file that predates this
+	// setting keeps the exact same encoder behavior. Lower trades picture
+	// quality for less to decode per frame (see the "video decode backlog"
+	// diagnostic in the Android client) -- useful on a client whose
+	// decoder is the bottleneck rather than the network.
+	ConfigValue<uint32> unison_bitrate_kbps{ 4000 };
 #ifdef ENABLE_METAL
 	ConfigValue<std::string> gpu_capture_dir{ "" };
 	ConfigValue<bool> framebuffer_fetch{ true };

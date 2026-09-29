@@ -25,34 +25,36 @@ inline uint32_t RoundUpTo16(uint32_t value)
 	return (value + 15u) & ~15u;
 }
 
-// Deliberately conservative for 854x480 @ ~20fps -- real streaming
-// guidelines put good-quality 480p well under this, leaving margin under
-// typical home Wi-Fi throughput so the encoder itself never demands more
-// bandwidth than the link can sustain in real time (see this file's rate
-// control comment). Both codecs share one value for now; H.265's better
-// efficiency means it could go lower, but starting equal keeps this easy
-// to reason about while tuning.
-constexpr int kTargetBitrateKbps = 4000;
+// Floor for a user-configurable bitrate (CemuConfig::unison_bitrate_kbps) --
+// low enough to still be a real quality tradeoff, high enough that neither
+// encoder is asked to do something degenerate with it.
+constexpr uint32_t kMinBitrateKbps = 250;
 
-// VBV buffer size, deliberately much smaller than kTargetBitrateKbps (a
-// full 1-second buffer): the periodic ~3s forced keyframes (see docs/
-// protocol.md's "Keyframe discipline") are far bigger than an average
-// frame, and a full-second VBV buffer legally lets the encoder dump an
-// entire second's bitrate budget into one of them -- a burst the network/
-// decoder still has to absorb all at once, which showed up as a
-// backlog recurring in lockstep with the keyframe interval (see
-// jni_bridge.c's "Unison video decode backlog" diagnostic). A ~125ms
-// buffer (2-3 frame periods at 20fps) instead forces the rate controller
-// to keep even keyframes close to the average frame size, trading a
-// slightly softer keyframe for never spiking the instantaneous rate.
-constexpr int kVbvBufferKbits = 500;
+// VBV buffer size as a fraction of the target bitrate, not a fixed constant
+// -- deliberately much smaller than a full 1-second buffer would be: the
+// periodic ~3s forced keyframes (see docs/protocol.md's "Keyframe
+// discipline") are far bigger than an average frame, and a full-second VBV
+// buffer legally lets the encoder dump an entire second's bitrate budget
+// into one of them -- a burst the network/decoder still has to absorb all
+// at once, which showed up as a backlog recurring in lockstep with the
+// keyframe interval (see jni_bridge.c's "Unison video decode backlog"
+// diagnostic). 1/8th of the bitrate is a ~125ms buffer (2-3 frame periods
+// at 20fps) at the original hardcoded 4000kbps this ratio was tuned
+// against; keeping it a ratio rather than a fixed kbit value preserves
+// that same ~125ms behavior at whatever bitrate is actually configured,
+// instead of the buffer becoming a larger or smaller fraction of a second
+// as the target moves.
+constexpr uint32_t kVbvBufferFractionOfBitrate = 8;
 
 }
 
-SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uint32_t height, uint32_t fps)
+SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uint32_t height, uint32_t fps,
+                                            uint32_t bitrateKbps)
 	: m_codec(codec), m_width(width), m_height(height), m_codedWidth(RoundUpTo16(width)),
 	  m_codedHeight(RoundUpTo16(height)), m_fps(fps == 0 ? 20 : fps)
 {
+	const uint32_t targetBitrateKbps = std::max(bitrateKbps, kMinBitrateKbps);
+	const uint32_t vbvBufferKbits = targetBitrateKbps / kVbvBufferFractionOfBitrate;
 	// ~3 seconds between forced keyframes at the real capture rate -- see
 	// docs/protocol.md's "Keyframe discipline".
 	m_keyframeInterval = m_fps * 3;
@@ -123,13 +125,15 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		// bursts, which is exactly the decode-side backlog (see
 		// jni_bridge.c's "Unison video decode backlog" diagnostic)
 		// observed specifically once gameplay -- not simpler screens --
-		// started rendering. kTargetBitrateKbps is deliberately
-		// conservative for this resolution/frame rate, leaving real margin
-		// under typical home Wi-Fi throughput.
+		// started rendering. targetBitrateKbps (CemuConfig::unison_bitrate_kbps,
+		// General Settings' Debug tab) defaults conservative for this
+		// resolution/frame rate, leaving real margin under typical home
+		// Wi-Fi throughput, but a decode-bottlenecked client can be traded
+		// down from there.
 		param.rc.i_rc_method = X264_RC_ABR;
-		param.rc.i_bitrate = kTargetBitrateKbps;
-		param.rc.i_vbv_max_bitrate = kTargetBitrateKbps;
-		param.rc.i_vbv_buffer_size = kVbvBufferKbits;
+		param.rc.i_bitrate = (int)targetBitrateKbps;
+		param.rc.i_vbv_max_bitrate = (int)targetBitrateKbps;
+		param.rc.i_vbv_buffer_size = (int)vbvBufferKbits;
 		// Baseline (CAVLC entropy coding), not Main (CABAC): the exact
 		// same bitstream that renders correctly on the Android emulator's
 		// software decoder showed real, persistent tearing/distortion on
@@ -172,9 +176,9 @@ SoftwareVideoEncoder::SoftwareVideoEncoder(VideoCodec codec, uint32_t width, uin
 		param->vui.matrixCoeffs = 6;
 		// Same reasoning as the H.264 branch above: capped bitrate, not CRF.
 		param->rc.rateControlMode = X265_RC_ABR;
-		param->rc.bitrate = kTargetBitrateKbps;
-		param->rc.vbvMaxBitrate = kTargetBitrateKbps;
-		param->rc.vbvBufferSize = kVbvBufferKbits;
+		param->rc.bitrate = (int)targetBitrateKbps;
+		param->rc.vbvMaxBitrate = (int)targetBitrateKbps;
+		param->rc.vbvBufferSize = (int)vbvBufferKbits;
 
 		x265_encoder* encoder = x265_encoder_open(param);
 		x265_param_free(param);

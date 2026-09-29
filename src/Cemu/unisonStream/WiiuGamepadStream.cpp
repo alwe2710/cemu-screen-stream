@@ -10,6 +10,7 @@
 #include "UnisonMessages.h"
 #include "UnisonWebSocket.h"
 #include "SoftwareVideoEncoder.h"
+#include "config/CemuConfig.h"
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 
@@ -163,7 +164,8 @@ bool SendAudioFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
 bool SendVideoFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
                     const std::vector<uint8_t>& rgba8, int width, int height,
                     const std::string& videoMode,
-                    std::unique_ptr<SoftwareVideoEncoder>& videoEncoder, uint32_t encoderFps)
+                    std::unique_ptr<SoftwareVideoEncoder>& videoEncoder, uint32_t encoderFps,
+                    uint32_t bitrateKbps)
 {
 	// (Re)build whenever there's no encoder yet (first frame this session)
 	// or this frame's real captured size no longer matches what the
@@ -173,11 +175,16 @@ bool SendVideoFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
 	// frame state carried over, same as a new session), which the client's
 	// own decoder naturally treats as a forced keyframe on this codec's
 	// very next EncodeFrame() call (the encoder itself always emits one
-	// first).
+	// first). bitrateKbps is likewise only actually applied at a (re)build
+	// like this -- a config change to CemuConfig::unison_bitrate_kbps
+	// while this same session's encoder is already open takes effect on
+	// its next session/resolution-change rebuild, not hot-reloaded
+	// mid-stream, same as videoMode itself already isn't.
 	if (!videoEncoder || videoEncoder->Width() != (uint32_t)width || videoEncoder->Height() != (uint32_t)height)
 	{
 		videoEncoder = std::make_unique<SoftwareVideoEncoder>(
-			videoMode == "h264" ? VideoCodec::H264 : VideoCodec::H265, (uint32_t)width, (uint32_t)height, encoderFps);
+			videoMode == "h264" ? VideoCodec::H264 : VideoCodec::H265, (uint32_t)width, (uint32_t)height, encoderFps,
+			bitrateKbps);
 	}
 
 	if (!videoEncoder->IsValid())
@@ -543,6 +550,11 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const sockaddr_in& videoAddr, cons
 	// constructor comment.
 	std::unique_ptr<SoftwareVideoEncoder> videoEncoder;
 	const uint32_t encoderFps = (uint32_t)(1000 / kMinCaptureInterval.count());
+	// Read once per session (General Settings' Debug tab, live-editable
+	// but only actually applied on the next encoder (re)build -- see
+	// SendVideoFrame()'s own comment), same "snapshot at session start"
+	// treatment as videoMode above.
+	const uint32_t bitrateKbps = GetConfig().unison_bitrate_kbps.GetValue();
 	// Edge-detection for the mic-enable signal -- session-local (not a
 	// member), same reasoning as lastSentFrameId above. Starts at "not
 	// wanted" so a session that begins with a mic already wanted (the game
@@ -571,7 +583,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const sockaddr_in& videoAddr, cons
 		if (!frameCopy.empty())
 		{
 			if (!SendVideoFrame(m_videoListenSocket, videoAddr, videoFrameIdCounter, frameCopy, width,
-			                    height, videoMode, videoEncoder, encoderFps))
+			                    height, videoMode, videoEncoder, encoderFps, bitrateKbps))
 				return;
 			videoFrameIdCounter++;
 			lastSentFrameId = currentId;

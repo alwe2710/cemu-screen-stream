@@ -275,6 +275,7 @@ XMLConfigParser CemuConfig::Load(XMLConfigParser& parser)
 	gdb_port = debug.get("GDBPort", 1337);
 	unison_enabled = debug.get("UnisonEnabled", false);
 	unison_port = debug.get("UnisonPort", 6840);
+	unison_bitrate_kbps = debug.get("UnisonBitrateKbps", 4000u);
 #ifdef ENABLE_METAL
 	gpu_capture_dir = debug.get("GPUCaptureDir", "");
 	framebuffer_fetch = debug.get("FramebufferFetch", true);
@@ -442,6 +443,7 @@ XMLConfigParser CemuConfig::Save(XMLConfigParser& parser)
 	debug.set("GDBPort", gdb_port);
 	debug.set("UnisonEnabled", unison_enabled);
 	debug.set("UnisonPort", unison_port);
+	debug.set("UnisonBitrateKbps", unison_bitrate_kbps);
 #ifdef ENABLE_METAL
 	debug.set("GPUCaptureDir", gpu_capture_dir);
 	debug.set("FramebufferFetch", framebuffer_fetch);
