@@ -41,7 +41,7 @@ void TestBuildHelloMessage()
 	const std::string hello = BuildHelloMessage();
 	CHECK(hello.find("\"message\":\"hello\"") != std::string::npos);
 	CHECK(hello.find("\"stream_type\":\"WIIU_GAMEPAD\"") != std::string::npos);
-	CHECK(hello.find("\"protocol_version\":2") != std::string::npos);
+	CHECK(hello.find("\"protocol_version\":3") != std::string::npos);
 	CHECK(hello.find("\"width\":854") != std::string::npos);
 	CHECK(hello.find("\"height\":480") != std::string::npos);
 	CHECK(hello.find("\"input_encoding\":\"n3ds_touch_and_buttons\"") != std::string::npos);
@@ -125,7 +125,7 @@ void TestBuildSessionReadyMessageVideoMode()
 	// TestBuildHelloMessage() does for hello.
 	for (const char* mode : {"tiles", "legacy", "h264", "h265"})
 	{
-		const std::string ready_json = BuildSessionReadyMessage(mode);
+		const std::string ready_json = BuildSessionReadyMessage(mode, 6850);
 		CHECK(ready_json.find("\"message\":\"session_ready\"") != std::string::npos);
 
 		unison_session_ready parsed;
@@ -138,6 +138,11 @@ void TestBuildSessionReadyMessageVideoMode()
 		// present -- catches a copy-paste from a multi-slot host's own
 		// BuildSessionReadyMessage() accidentally landing here.
 		CHECK(!parsed.has_redirect);
+		// Dedicated video connection (docs/protocol.md, protocol_version 3)
+		// -- WIIU_GAMEPAD always offers one, so this must round-trip as a
+		// real port, not be silently dropped by the JSON builder/parser.
+		CHECK(parsed.has_video_port);
+		CHECK(parsed.video_port == 6850);
 	}
 }
 

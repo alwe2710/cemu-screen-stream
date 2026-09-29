@@ -132,10 +132,27 @@ public:
 private:
 	void AcceptLoop();
 	void ServeConnection(SOCKET fd);
-	void RunSession(SOCKET fd, const std::string& videoMode);
+	void RunSession(SOCKET fd, SOCKET videoFd, const std::string& videoMode);
+	// Blocking accept with a timeout on m_videoListenSocket -- called from
+	// ServeConnection() right after session_ready (with video_port) goes
+	// out, so RunSession() always starts with a real, already-connected
+	// video socket rather than having to handle "not there yet" itself.
+	// Returns INVALID_SOCKET on timeout/error.
+	[[nodiscard]] SOCKET AcceptVideoConnection(std::chrono::milliseconds timeout);
 
 	const uint16_t m_port;
 	SOCKET m_listenSocket;
+	// Dedicated video connection (docs/protocol.md, "Dedicated video
+	// connection", protocol_version 3) -- a second, always-listening socket
+	// alongside m_listenSocket above, port = m_port + kVideoPortOffset.
+	// Bound in the constructor the same way m_listenSocket is, so it's
+	// ready before any client ever connects, not allocated per-session.
+	static constexpr uint16_t kVideoPortOffset = 50;
+	// Default-initialized (unlike m_listenSocket above, always assigned
+	// before any early-return path in the constructor runs) -- this one is
+	// set up *after* an m_listenSocket-failure early return, so the
+	// destructor must still see a well-defined value on that path.
+	SOCKET m_videoListenSocket = INVALID_SOCKET;
 	std::thread m_acceptThread;
 	std::atomic_bool m_stop{false};
 	std::unique_ptr<Beacon> m_beacon;

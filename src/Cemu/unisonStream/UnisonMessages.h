@@ -22,7 +22,11 @@
 namespace Cemu::UnisonStream
 {
 
-constexpr int kProtocolVersion = 2;
+// Mirrors unison/handshake.h's UNISON_PROTOCOL_VERSION, which must stay
+// numerically in sync -- see that macro's own comment on the 2 -> 3 bump
+// (session_ready.video_port, docs/protocol.md's "Dedicated video
+// connection").
+constexpr int kProtocolVersion = 3;
 constexpr char kStreamType[] = "WIIU_GAMEPAD";
 // Same combined touch+buttons+dual-analog-stick encoding Azahar's
 // N3DS_BOTTOM_SCREEN advertises (unison/protocol.h's
@@ -65,7 +69,7 @@ std::string BuildHelloMessage();
 // HandshakeErrorCode::MalformedRequest.
 std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload);
 
-std::string BuildSessionReadyMessage(const std::string& videoMode);
+std::string BuildSessionReadyMessage(const std::string& videoMode, uint16_t videoPort);
 
 std::string BuildHandshakeErrorMessage(HandshakeErrorCode code, const std::string& detail);
 

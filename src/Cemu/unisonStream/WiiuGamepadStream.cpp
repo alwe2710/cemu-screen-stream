@@ -35,6 +35,32 @@ void AppendS16LE(std::vector<uint8_t>& out, int16_t value)
 	out.push_back((uint8_t)((value >> 8) & 0xFF));
 }
 
+// Shared by both m_listenSocket and m_videoListenSocket (WiiuGamepadStream's
+// constructor) -- identical bind+listen setup, just a different port.
+// Returns INVALID_SOCKET on any failure (caller decides how to react).
+SOCKET CreateListenSocket(uint16_t port)
+{
+	SOCKET fd = socket(PF_INET, SOCK_STREAM, 0);
+	if (fd == INVALID_SOCKET)
+		return INVALID_SOCKET;
+
+	int reuseEnabled = 1;
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuseEnabled, sizeof(reuseEnabled));
+
+	sockaddr_in serverAddr{};
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	serverAddr.sin_port = htons(port);
+
+	if (bind(fd, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR ||
+		listen(fd, 1) == SOCKET_ERROR)
+	{
+		closesocket(fd);
+		return INVALID_SOCKET;
+	}
+	return fd;
+}
+
 // Hand-built the same way SendVideoFrame() builds a type=1 message -- no
 // unison_build_audio_frame() exists in core since, like video, the actual
 // sample layout/rate is entirely up to each emulator's own audio pipeline
@@ -161,25 +187,23 @@ WiiuGamepadStream::WiiuGamepadStream(uint16_t port) : m_port(port)
 	WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
 
-	m_listenSocket = socket(PF_INET, SOCK_STREAM, 0);
+	m_listenSocket = CreateListenSocket(m_port);
 	if (m_listenSocket == INVALID_SOCKET)
 		return;
 
-	int reuseEnabled = 1;
-	setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuseEnabled, sizeof(reuseEnabled));
-
-	sockaddr_in serverAddr{};
-	serverAddr.sin_family = AF_INET;
-	serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	serverAddr.sin_port = htons(m_port);
-
-	if (bind(m_listenSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR ||
-		listen(m_listenSocket, 1) == SOCKET_ERROR)
-	{
-		closesocket(m_listenSocket);
-		m_listenSocket = INVALID_SOCKET;
-		return;
-	}
+	// Dedicated video connection (docs/protocol.md, protocol_version 3) --
+	// bound here, alongside m_listenSocket, so it's already listening
+	// before any client ever connects, same as m_listenSocket itself. Not
+	// fatal if this fails (falls back to no video_port in session_ready,
+	// i.e. the pre-protocol_version-3 single-connection behavior) -- only
+	// m_listenSocket failing aborts construction entirely.
+	m_videoListenSocket = CreateListenSocket((uint16_t)(m_port + kVideoPortOffset));
+	// Non-blocking: unlike m_listenSocket (accepted from a plain blocking
+	// AcceptLoop() below), this one is only ever accepted from inside
+	// AcceptVideoConnection()'s own bounded-wait loop, which needs to be
+	// able to time out.
+	if (m_videoListenSocket != INVALID_SOCKET)
+		SocketSetNonBlocking(m_videoListenSocket);
 
 	m_acceptThread = std::thread(&WiiuGamepadStream::AcceptLoop, this);
 
@@ -192,6 +216,8 @@ WiiuGamepadStream::~WiiuGamepadStream()
 	m_beacon.reset();
 	if (m_listenSocket != INVALID_SOCKET)
 		closesocket(m_listenSocket);
+	if (m_videoListenSocket != INVALID_SOCKET)
+		closesocket(m_videoListenSocket);
 	if (m_acceptThread.joinable())
 		m_acceptThread.join();
 #if BOOST_OS_WINDOWS
@@ -354,15 +380,35 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	// offered there any more) -- this normalizes the case of an old/
 	// unaware client that still asks for "legacy"/"tiles"/nothing at all.
 	const std::string videoMode = (ack->videoMode == "h265") ? "h265" : "h264";
+	const uint16_t videoPort = (uint16_t)(m_port + kVideoPortOffset);
 
-	if (!SendWebSocketTextFrame(fd, BuildSessionReadyMessage(videoMode), m_stop))
+	if (!SendWebSocketTextFrame(fd, BuildSessionReadyMessage(videoMode, videoPort), m_stop))
 	{
 		m_active = false;
 		closesocket(fd);
 		return;
 	}
 
-	RunSession(fd, videoMode);
+	// Dedicated video connection (docs/protocol.md, protocol_version 3):
+	// the client is expected to open a second connection to videoPort right
+	// after receiving session_ready above -- wait for it here, bounded,
+	// before ever entering RunSession(), so that function never has to
+	// handle "video socket not there yet" itself. A client this version
+	// always attempts this (exact-match protocol_version already ensures
+	// it speaks 3, see docs/protocol.md's "Protocol Version") -- a timeout
+	// here means a genuine connectivity problem, treated as a handshake
+	// failure the same as any other.
+	const SOCKET videoFd = AcceptVideoConnection(std::chrono::seconds(5));
+	if (videoFd == INVALID_SOCKET)
+	{
+		m_active = false;
+		closesocket(fd);
+		return;
+	}
+
+	RunSession(fd, videoFd, videoMode);
+
+	closesocket(videoFd);
 
 	m_streaming = false;
 	m_inputActive = false;
@@ -379,7 +425,38 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	closesocket(fd);
 }
 
-void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
+SOCKET WiiuGamepadStream::AcceptVideoConnection(std::chrono::milliseconds timeout)
+{
+	if (m_videoListenSocket == INVALID_SOCKET)
+		return INVALID_SOCKET;
+
+	// Same bounded-wait idiom as ReadHttpRequest()/ReceiveOneWebSocketFrame()
+	// in UnisonWebSocket.h: non-blocking socket, poll via accept() itself
+	// (which returns immediately with WouldBlock when nothing's pending
+	// rather than actually blocking), short sleep between attempts, given
+	// up once the deadline passes.
+	const auto deadline = std::chrono::steady_clock::now() + timeout;
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		if (m_stop)
+			return INVALID_SOCKET;
+		sockaddr_in clientAddr{};
+		socklen_t clientAddrSize = sizeof(clientAddr);
+		SOCKET fd = accept(m_videoListenSocket, (sockaddr*)&clientAddr, &clientAddrSize);
+		if (fd != INVALID_SOCKET)
+		{
+			SocketSetNonBlocking(fd);
+			SocketSetNoDelay(fd);
+			return fd;
+		}
+		if (!SocketWouldBlock())
+			return INVALID_SOCKET; // Listening socket closed (destructor) or errored.
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	return INVALID_SOCKET; // Timed out.
+}
+
+void WiiuGamepadStream::RunSession(SOCKET fd, SOCKET videoFd, const std::string& videoMode)
 {
 	m_streaming = true;
 	m_inputActive = true;
@@ -425,7 +502,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 		}
 		if (!frameCopy.empty())
 		{
-			if (!SendVideoFrame(fd, frameCopy, width, height, videoMode, videoEncoder, encoderFps, m_stop))
+			if (!SendVideoFrame(videoFd, frameCopy, width, height, videoMode, videoEncoder, encoderFps, m_stop))
 				return;
 			lastSentFrameId = currentId;
 		}
@@ -577,6 +654,20 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 				}
 			}
 		}
+
+		// videoFd carries no client->server traffic at all (see
+		// docs/protocol.md, "Dedicated video connection") -- this is purely
+		// a liveness check, so a disconnect there ends the whole session
+		// the same as fd disconnecting does, rather than silently
+		// continuing to "stream" video into a dead socket. Any actual bytes
+		// (shouldn't happen, but not a protocol violation worth tearing the
+		// session down over on their own) are simply discarded.
+		uint8_t videoLivenessBuf[64];
+		const int videoReceived = recv(videoFd, (char*)videoLivenessBuf, (int)sizeof(videoLivenessBuf), 0);
+		if (videoReceived == 0)
+			return; // Disconnected.
+		if (videoReceived < 0 && !SocketWouldBlock())
+			return; // Error.
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(4));
 	}
