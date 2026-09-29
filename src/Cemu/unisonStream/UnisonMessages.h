@@ -23,10 +23,10 @@ namespace Cemu::UnisonStream
 {
 
 // Mirrors unison/handshake.h's UNISON_PROTOCOL_VERSION, which must stay
-// numerically in sync -- see that macro's own comment on the 2 -> 3 bump
-// (session_ready.video_port, docs/protocol.md's "Dedicated video
-// connection").
-constexpr int kProtocolVersion = 3;
+// numerically in sync -- see that macro's own comment on the 2 -> 3 and
+// 3 -> 4 bumps (session_ready.video_port, docs/protocol.md's "Dedicated
+// video/audio channel (UDP)").
+constexpr int kProtocolVersion = 4;
 constexpr char kStreamType[] = "WIIU_GAMEPAD";
 // Same combined touch+buttons+dual-analog-stick encoding Azahar's
 // N3DS_BOTTOM_SCREEN advertises (unison/protocol.h's

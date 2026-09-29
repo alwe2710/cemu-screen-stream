@@ -35,12 +35,15 @@ void AppendS16LE(std::vector<uint8_t>& out, int16_t value)
 	out.push_back((uint8_t)((value >> 8) & 0xFF));
 }
 
-// Shared by both m_listenSocket and m_videoListenSocket (WiiuGamepadStream's
-// constructor) -- identical bind+listen setup, just a different port.
-// Returns INVALID_SOCKET on any failure (caller decides how to react).
-SOCKET CreateListenSocket(uint16_t port)
+// Shared by both m_listenSocket (TCP, useUdp=false) and m_videoListenSocket
+// (UDP, useUdp=true) in WiiuGamepadStream's constructor -- same bind setup
+// either way, just a different socket type/port, and only the TCP one goes
+// on to listen()/accept() connections (UDP datagrams just arrive once
+// bound, there's no "connection" to accept). Returns INVALID_SOCKET on any
+// failure (caller decides how to react).
+SOCKET CreateListenSocket(uint16_t port, bool useUdp)
 {
-	SOCKET fd = socket(PF_INET, SOCK_STREAM, 0);
+	SOCKET fd = socket(PF_INET, useUdp ? SOCK_DGRAM : SOCK_STREAM, 0);
 	if (fd == INVALID_SOCKET)
 		return INVALID_SOCKET;
 
@@ -53,7 +56,7 @@ SOCKET CreateListenSocket(uint16_t port)
 	serverAddr.sin_port = htons(port);
 
 	if (bind(fd, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR ||
-		listen(fd, 1) == SOCKET_ERROR)
+		(!useUdp && listen(fd, 1) == SOCKET_ERROR))
 	{
 		closesocket(fd);
 		return INVALID_SOCKET;
@@ -61,12 +64,56 @@ SOCKET CreateListenSocket(uint16_t port)
 	return fd;
 }
 
+// Shared wire constant (core/include/unison/protocol.h) -- both this sender
+// and the Android receiver must agree on it exactly, since the receiver
+// places out-of-order fragments at i * kMaxFragmentPayload without having
+// seen every earlier fragment yet. See that macro's own comment.
+constexpr size_t kMaxFragmentPayload = UNISON_UDP_MAX_FRAGMENT_PAYLOAD;
+
+// Splits `message` (a complete message body, e.g. what SendAudioFrame/
+// SendVideoFrame below build -- unchanged either way, see docs/protocol.md's
+// "Fragment framing") across one or more UDP datagrams, each prefixed with a
+// unison_udp_fragment_header. Returns false only on a real local sendto()
+// error (bad fd, EMSGSIZE, an ICMP-surfaced "destination unreachable", ...)
+// -- never on ordinary in-flight packet loss, which sendto() itself has no
+// way to observe at all; the caller treats false the same as any other
+// socket error (session considered dead), same convention
+// SendVideoFrame/SendAudioFrame already used for the TCP path.
+bool SendFragmented(SOCKET udpFd, const sockaddr_in& dest, const std::vector<uint8_t>& message,
+                     unison_msg_type type, uint32_t frameId)
+{
+	const size_t fragmentCount = message.empty() ? 1 : (message.size() + kMaxFragmentPayload - 1) / kMaxFragmentPayload;
+	std::vector<uint8_t> datagram;
+	for (size_t i = 0; i < fragmentCount; i++)
+	{
+		const size_t offset = i * kMaxFragmentPayload;
+		const size_t chunkLen = std::min(kMaxFragmentPayload, message.size() - offset);
+
+		unison_udp_fragment_header header{};
+		header.msg_type = (uint8_t)type;
+		header.frame_id = frameId;
+		header.fragment_index = (uint16_t)i;
+		header.fragment_count = (uint16_t)fragmentCount;
+
+		datagram.resize(UNISON_UDP_FRAGMENT_HEADER_SIZE + chunkLen);
+		unison_build_udp_fragment_header(&header, datagram.data());
+		if (chunkLen > 0)
+			memcpy(datagram.data() + UNISON_UDP_FRAGMENT_HEADER_SIZE, message.data() + offset, chunkLen);
+
+		if (sendto(udpFd, (const char*)datagram.data(), (int)datagram.size(), 0,
+		           (const sockaddr*)&dest, sizeof(dest)) == SOCKET_ERROR)
+			return false;
+	}
+	return true;
+}
+
 // Hand-built the same way SendVideoFrame() builds a type=1 message -- no
 // unison_build_audio_frame() exists in core since, like video, the actual
 // sample layout/rate is entirely up to each emulator's own audio pipeline
 // (see unison/protocol.h's unison_audio_frame: type=3, sample_rate u32le,
 // channels u8, then raw s16le samples, no further structure).
-bool SendAudioFrame(SOCKET fd, const std::vector<int16_t>& samples, uint32_t sampleRate, uint8_t channels, const std::atomic_bool& stop)
+bool SendAudioFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
+                     const std::vector<int16_t>& samples, uint32_t sampleRate, uint8_t channels)
 {
 	std::vector<uint8_t> message;
 	message.reserve(6 + samples.size() * sizeof(int16_t));
@@ -76,7 +123,7 @@ bool SendAudioFrame(SOCKET fd, const std::vector<int16_t>& samples, uint32_t sam
 	for (int16_t sample : samples)
 		AppendS16LE(message, sample);
 
-	return SendWebSocketBinaryFrame(fd, message, stop);
+	return SendFragmented(udpFd, dest, message, UNISON_MSG_AUDIO, frameId);
 }
 
 // Returns false only on a real socket error (caller should treat the
@@ -113,19 +160,20 @@ bool SendAudioFrame(SOCKET fd, const std::vector<int16_t>& samples, uint32_t sam
 // happens to match 854x480). Fixed by (re)constructing videoEncoder
 // in-place whenever this frame's width/height don't match its current
 // Width()/Height(), same as a resolution change on a first connect.
-bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int height,
+bool SendVideoFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
+                    const std::vector<uint8_t>& rgba8, int width, int height,
                     const std::string& videoMode,
-                    std::unique_ptr<SoftwareVideoEncoder>& videoEncoder, uint32_t encoderFps,
-                    const std::atomic_bool& stop)
+                    std::unique_ptr<SoftwareVideoEncoder>& videoEncoder, uint32_t encoderFps)
 {
 	// (Re)build whenever there's no encoder yet (first frame this session)
 	// or this frame's real captured size no longer matches what the
 	// current one was built for (a DRC content change, e.g. Wind Waker
 	// HD's item-picker vs. its TV-mirrored view) -- see this function's own
 	// top comment. A rebuild means a fresh encoder context (no reference-
-	// frame state carried over, same as a new session), which
-	// SendWebSocketBinaryFrame naturally surfaces as a forced keyframe on
-	// this codec's very next EncodeFrame() call.
+	// frame state carried over, same as a new session), which the client's
+	// own decoder naturally treats as a forced keyframe on this codec's
+	// very next EncodeFrame() call (the encoder itself always emits one
+	// first).
 	if (!videoEncoder || videoEncoder->Width() != (uint32_t)width || videoEncoder->Height() != (uint32_t)height)
 	{
 		videoEncoder = std::make_unique<SoftwareVideoEncoder>(
@@ -170,7 +218,7 @@ bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int
 	message.insert(message.end(), nals.begin(), nals.end());
 
 	const auto sendStart = std::chrono::steady_clock::now();
-	const bool sendOk = SendWebSocketBinaryFrame(fd, message, stop);
+	const bool sendOk = SendFragmented(udpFd, dest, message, UNISON_MSG_VIDEO, frameId);
 	const auto sendMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::steady_clock::now() - sendStart).count();
 	if (encodeMs > 20 || sendMs > 20)
@@ -187,21 +235,20 @@ WiiuGamepadStream::WiiuGamepadStream(uint16_t port) : m_port(port)
 	WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
 
-	m_listenSocket = CreateListenSocket(m_port);
+	m_listenSocket = CreateListenSocket(m_port, /* useUdp */ false);
 	if (m_listenSocket == INVALID_SOCKET)
 		return;
 
-	// Dedicated video connection (docs/protocol.md, protocol_version 3) --
-	// bound here, alongside m_listenSocket, so it's already listening
+	// Dedicated video/audio channel (docs/protocol.md, protocol_version 4)
+	// -- bound here, alongside m_listenSocket, so it's already listening
 	// before any client ever connects, same as m_listenSocket itself. Not
 	// fatal if this fails (falls back to no video_port in session_ready,
-	// i.e. the pre-protocol_version-3 single-connection behavior) -- only
+	// i.e. the pre-protocol_version-4 single-connection behavior) -- only
 	// m_listenSocket failing aborts construction entirely.
-	m_videoListenSocket = CreateListenSocket((uint16_t)(m_port + kVideoPortOffset));
-	// Non-blocking: unlike m_listenSocket (accepted from a plain blocking
-	// AcceptLoop() below), this one is only ever accepted from inside
-	// AcceptVideoConnection()'s own bounded-wait loop, which needs to be
-	// able to time out.
+	m_videoListenSocket = CreateListenSocket((uint16_t)(m_port + kVideoPortOffset), /* useUdp */ true);
+	// Non-blocking: this socket is only ever read from inside
+	// WaitForVideoHello()'s own bounded-wait loop (rendezvous) and
+	// RunSession()'s main loop, neither of which may block on it.
 	if (m_videoListenSocket != INVALID_SOCKET)
 		SocketSetNonBlocking(m_videoListenSocket);
 
@@ -389,26 +436,24 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 		return;
 	}
 
-	// Dedicated video connection (docs/protocol.md, protocol_version 3):
-	// the client is expected to open a second connection to videoPort right
-	// after receiving session_ready above -- wait for it here, bounded,
-	// before ever entering RunSession(), so that function never has to
-	// handle "video socket not there yet" itself. A client this version
-	// always attempts this (exact-match protocol_version already ensures
-	// it speaks 3, see docs/protocol.md's "Protocol Version") -- a timeout
-	// here means a genuine connectivity problem, treated as a handshake
-	// failure the same as any other.
-	const SOCKET videoFd = AcceptVideoConnection(std::chrono::seconds(5));
-	if (videoFd == INVALID_SOCKET)
+	// Dedicated video/audio channel (docs/protocol.md, protocol_version 4):
+	// the client is expected to send a UNISON_MSG_UDP_HELLO rendezvous
+	// datagram to videoPort right after receiving session_ready above --
+	// wait for it here, bounded, before ever entering RunSession(), so
+	// that function never has to handle "no client address yet" itself. A
+	// client this version always attempts this (exact-match
+	// protocol_version already ensures it speaks 4, see docs/protocol.md's
+	// "Protocol Version") -- a timeout here means a genuine connectivity
+	// problem, treated as a handshake failure the same as any other.
+	sockaddr_in videoAddr{};
+	if (!WaitForVideoHello(std::chrono::seconds(5), &videoAddr))
 	{
 		m_active = false;
 		closesocket(fd);
 		return;
 	}
 
-	RunSession(fd, videoFd, videoMode);
-
-	closesocket(videoFd);
+	RunSession(fd, videoAddr, videoMode);
 
 	m_streaming = false;
 	m_inputActive = false;
@@ -425,58 +470,65 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	closesocket(fd);
 }
 
-SOCKET WiiuGamepadStream::AcceptVideoConnection(std::chrono::milliseconds timeout)
+bool WiiuGamepadStream::WaitForVideoHello(std::chrono::milliseconds timeout, sockaddr_in* outAddr)
 {
 	if (m_videoListenSocket == INVALID_SOCKET)
-		return INVALID_SOCKET;
+		return false;
 
 	// Same bounded-wait idiom as ReadHttpRequest()/ReceiveOneWebSocketFrame()
-	// in UnisonWebSocket.h: non-blocking socket, poll via accept() itself
+	// in UnisonWebSocket.h: non-blocking socket, poll via recvfrom() itself
 	// (which returns immediately with WouldBlock when nothing's pending
 	// rather than actually blocking), short sleep between attempts, given
-	// up once the deadline passes.
+	// up once the deadline passes. UDP is connectionless -- there's nothing
+	// to accept()/upgrade here (docs/protocol.md, "Dedicated video/audio
+	// channel (UDP)"), just a wait for the client's own
+	// UNISON_MSG_UDP_HELLO rendezvous datagram, whose source address is
+	// then remembered as this session's Video/Audio destination.
+	uint8_t buf[UNISON_UDP_FRAGMENT_HEADER_SIZE];
 	const auto deadline = std::chrono::steady_clock::now() + timeout;
 	while (std::chrono::steady_clock::now() < deadline)
 	{
 		if (m_stop)
-			return INVALID_SOCKET;
-		sockaddr_in clientAddr{};
-		socklen_t clientAddrSize = sizeof(clientAddr);
-		SOCKET fd = accept(m_videoListenSocket, (sockaddr*)&clientAddr, &clientAddrSize);
-		if (fd != INVALID_SOCKET)
+			return false;
+		sockaddr_in senderAddr{};
+		socklen_t senderAddrSize = sizeof(senderAddr);
+		const int received = recvfrom(m_videoListenSocket, (char*)buf, sizeof(buf), 0,
+		                               (sockaddr*)&senderAddr, &senderAddrSize);
+		if (received >= 0)
 		{
-			SocketSetNonBlocking(fd);
-			SocketSetNoDelay(fd);
-			// The video connection is a plain RFC6455 WebSocket connection
-			// like any other (docs/protocol.md, "Dedicated video
-			// connection") -- just no app handshake on top of it. Missing
-			// this upgrade entirely was the actual first-round bug here:
-			// the client's own connect_and_ws_upgrade() sends the HTTP
-			// Upgrade request and then just waits for a 101 response that
-			// never came, timing out client-side every time ("Video-
-			// Verbindung fehlgeschlagen") even though the TCP accept()
-			// above had already succeeded.
-			const auto request = ReadHttpRequest(fd, m_stop);
-			if (!request || !IsWebSocketUpgradeRequest(*request) ||
-				!SendWebSocketUpgradeResponse(fd, *request, m_stop))
+			unison_udp_fragment_header header{};
+			if ((size_t)received >= UNISON_UDP_FRAGMENT_HEADER_SIZE &&
+				unison_parse_udp_fragment_header(buf, (size_t)received, &header) == UNISON_OK &&
+				header.msg_type == UNISON_MSG_UDP_HELLO)
 			{
-				closesocket(fd);
-				return INVALID_SOCKET;
+				*outAddr = senderAddr;
+				return true;
 			}
-			return fd;
+			// Anything else on this port (a stray/malformed packet, or a
+			// second hello from a different sender racing this one) is
+			// simply ignored -- keep waiting for a valid one until the
+			// deadline, rather than failing the whole handshake over it.
+			continue;
 		}
 		if (!SocketWouldBlock())
-			return INVALID_SOCKET; // Listening socket closed (destructor) or errored.
+			return false; // Listening socket closed (destructor) or errored.
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	}
-	return INVALID_SOCKET; // Timed out.
+	return false; // Timed out.
 }
 
-void WiiuGamepadStream::RunSession(SOCKET fd, SOCKET videoFd, const std::string& videoMode)
+void WiiuGamepadStream::RunSession(SOCKET fd, const sockaddr_in& videoAddr, const std::string& videoMode)
 {
 	m_streaming = true;
 	m_inputActive = true;
 	uint64_t lastSentFrameId = 0;
+	// Monotonic per-type counters for unison_udp_fragment_header.frame_id
+	// (docs/protocol.md, "Fragment framing") -- video and audio count
+	// independently, session-local (fresh per session, same reasoning as
+	// lastSentFrameId above -- a receiver's reassembly state must never
+	// carry over between sessions either).
+	uint32_t videoFrameIdCounter = 0;
+	uint32_t audioFrameIdCounter = 0;
 	// Session-local H.264/H265 encoder -- fresh per session, same reasoning
 	// as lastSentMicWanted below: encoder/decoder reference-frame state
 	// must never cross sessions.
@@ -518,8 +570,10 @@ void WiiuGamepadStream::RunSession(SOCKET fd, SOCKET videoFd, const std::string&
 		}
 		if (!frameCopy.empty())
 		{
-			if (!SendVideoFrame(videoFd, frameCopy, width, height, videoMode, videoEncoder, encoderFps, m_stop))
+			if (!SendVideoFrame(m_videoListenSocket, videoAddr, videoFrameIdCounter, frameCopy, width,
+			                    height, videoMode, videoEncoder, encoderFps))
 				return;
+			videoFrameIdCounter++;
 			lastSentFrameId = currentId;
 		}
 
@@ -539,8 +593,10 @@ void WiiuGamepadStream::RunSession(SOCKET fd, SOCKET videoFd, const std::string&
 			}
 			if (!audioSamples.empty())
 			{
-				if (!SendAudioFrame(fd, audioSamples, audioSampleRate, audioChannels, m_stop))
+				if (!SendAudioFrame(m_videoListenSocket, videoAddr, audioFrameIdCounter, audioSamples,
+				                    audioSampleRate, audioChannels))
 					return;
+				audioFrameIdCounter++;
 			}
 		}
 
@@ -671,19 +727,14 @@ void WiiuGamepadStream::RunSession(SOCKET fd, SOCKET videoFd, const std::string&
 			}
 		}
 
-		// videoFd carries no client->server traffic at all (see
-		// docs/protocol.md, "Dedicated video connection") -- this is purely
-		// a liveness check, so a disconnect there ends the whole session
-		// the same as fd disconnecting does, rather than silently
-		// continuing to "stream" video into a dead socket. Any actual bytes
-		// (shouldn't happen, but not a protocol violation worth tearing the
-		// session down over on their own) are simply discarded.
-		uint8_t videoLivenessBuf[64];
-		const int videoReceived = recv(videoFd, (char*)videoLivenessBuf, (int)sizeof(videoLivenessBuf), 0);
-		if (videoReceived == 0)
-			return; // Disconnected.
-		if (videoReceived < 0 && !SocketWouldBlock())
-			return; // Error.
+		// No liveness check needed on m_videoListenSocket here -- UDP has no
+		// disconnect signal at all (docs/protocol.md, "Dedicated video/audio
+		// channel (UDP)"), so session lifetime is entirely driven by fd (the
+		// TCP control connection) above, same as every message type that
+		// still lives there. A stray/duplicate datagram arriving on
+		// m_videoListenSocket mid-session (e.g. a retried hello that
+		// outraced this session actually starting) is simply never read --
+		// harmless for UDP, unlike a full TCP receive buffer.
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(4));
 	}
