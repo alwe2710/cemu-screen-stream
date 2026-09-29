@@ -447,6 +447,22 @@ SOCKET WiiuGamepadStream::AcceptVideoConnection(std::chrono::milliseconds timeou
 		{
 			SocketSetNonBlocking(fd);
 			SocketSetNoDelay(fd);
+			// The video connection is a plain RFC6455 WebSocket connection
+			// like any other (docs/protocol.md, "Dedicated video
+			// connection") -- just no app handshake on top of it. Missing
+			// this upgrade entirely was the actual first-round bug here:
+			// the client's own connect_and_ws_upgrade() sends the HTTP
+			// Upgrade request and then just waits for a 101 response that
+			// never came, timing out client-side every time ("Video-
+			// Verbindung fehlgeschlagen") even though the TCP accept()
+			// above had already succeeded.
+			const auto request = ReadHttpRequest(fd, m_stop);
+			if (!request || !IsWebSocketUpgradeRequest(*request) ||
+				!SendWebSocketUpgradeResponse(fd, *request, m_stop))
+			{
+				closesocket(fd);
+				return INVALID_SOCKET;
+			}
 			return fd;
 		}
 		if (!SocketWouldBlock())
