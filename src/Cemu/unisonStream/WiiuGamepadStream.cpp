@@ -5,9 +5,7 @@
 #include <array>
 #include <cstring>
 
-#include "unison/deflate.h"
 #include "unison/protocol.h"
-#include "unison/video_encode.h"
 #include "Beacon.h"
 #include "UnisonMessages.h"
 #include "UnisonWebSocket.h"
@@ -55,43 +53,19 @@ bool SendAudioFrame(SOCKET fd, const std::vector<int16_t>& samples, uint32_t sam
 	return SendWebSocketBinaryFrame(fd, message, stop);
 }
 
-// Converts VulkanRenderer::CaptureStreamFrame()'s R8G8B8A8 output into
-// row-major u16le RGB565. No vertical flip: the DRC texture is already
-// top-down row-major from Cemu's own perspective (glReadPixels-style
-// bottom-up conventions only apply to OpenGL's default framebuffer, not to
-// an explicit vkCmdCopyImageToBuffer from a 2D image).
-void ConvertRgba8ToRgb565(const uint8_t* rgba8, int width, int height, std::vector<uint8_t>& outRgb565)
-{
-	outRgb565.resize((size_t)width * height * 2);
-	const size_t pixelCount = (size_t)width * height;
-	for (size_t i = 0; i < pixelCount; i++)
-	{
-		const uint8_t r = rgba8[i * 4 + 0];
-		const uint8_t g = rgba8[i * 4 + 1];
-		const uint8_t b = rgba8[i * 4 + 2];
-		const uint16_t pixel = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-		outRgb565[i * 2 + 0] = (uint8_t)(pixel & 0xFF);
-		outRgb565[i * 2 + 1] = (uint8_t)((pixel >> 8) & 0xFF);
-	}
-}
-
-// lastSentRgb565 is RunSession()'s own session-local "previous frame" state
-// (in/out) -- empty means no previous frame yet (this session's first
-// frame, or a resolution change), matching unison_encode_video_frame()'s
-// previous_rgb565=NULL contract. Encodes via TILES delta + dedup against it
-// instead of always sending a full frame (see docs/protocol.md, "Frame
-// semantics (video dedup)" -- this is that behavior, actually implemented).
 // Returns false only on a real socket error (caller should treat the
-// session as dead); a deduped ("nothing changed") frame still returns true
-// having sent nothing.
-// videoMode comes from the client's hello_ack.video_mode (UnisonMessages.h's
-// HandshakeAck): "h264"/"h265" use videoEncoder (RunSession's session-local
-// SoftwareVideoEncoder, own by reference here -- see this function's own
-// resolution-change handling below for why it's (re)built in here rather
-// than once up front in RunSession); "legacy" always sends a full,
-// non-tiled, non-deduped frame (the original, pre-TILES behavior, kept as a
-// user-selectable fallback); anything else uses the TILES delta-encoding +
-// dedup path.
+// session as dead).
+//
+// videoMode is always "h264" or "h265" by the time this is called --
+// ServeConnection() normalizes anything else (an old/unaware client asking
+// for the raw TILES/legacy modes this stream type used to also support,
+// or nothing at all) to "h264" before RunSession() is ever entered. Both
+// raw paths (a full non-tiled frame, and TILES delta-encoding + dedup
+// against the previous frame) were removed entirely per explicit request:
+// every client's own video-mode picker for WIIU_GAMEPAD no longer offers
+// them either, so there is no longer a caller that could reach this
+// function with anything else, and no reason to keep dead paths sending
+// raw RGB565 that a real codec already does better.
 //
 // width/height are THIS frame's real captured DRC content size, not
 // necessarily the fixed 854x480 every other stream type/mode here assumes
@@ -114,127 +88,68 @@ void ConvertRgba8ToRgb565(const uint8_t* rgba8, int width, int height, std::vect
 // in-place whenever this frame's width/height don't match its current
 // Width()/Height(), same as a resolution change on a first connect.
 bool SendVideoFrame(SOCKET fd, const std::vector<uint8_t>& rgba8, int width, int height,
-                    std::vector<uint8_t>& lastSentRgb565, const std::string& videoMode,
+                    const std::string& videoMode,
                     std::unique_ptr<SoftwareVideoEncoder>& videoEncoder, uint32_t encoderFps,
                     const std::atomic_bool& stop)
 {
-	if (videoMode == "h264" || videoMode == "h265")
+	// (Re)build whenever there's no encoder yet (first frame this session)
+	// or this frame's real captured size no longer matches what the
+	// current one was built for (a DRC content change, e.g. Wind Waker
+	// HD's item-picker vs. its TV-mirrored view) -- see this function's own
+	// top comment. A rebuild means a fresh encoder context (no reference-
+	// frame state carried over, same as a new session), which
+	// SendWebSocketBinaryFrame naturally surfaces as a forced keyframe on
+	// this codec's very next EncodeFrame() call.
+	if (!videoEncoder || videoEncoder->Width() != (uint32_t)width || videoEncoder->Height() != (uint32_t)height)
 	{
-		// (Re)build whenever there's no encoder yet (first frame this
-		// session) or this frame's real captured size no longer matches
-		// what the current one was built for (a DRC content change, e.g.
-		// Wind Waker HD's item-picker vs. its TV-mirrored view) -- see this
-		// function's own top comment. A rebuild means a fresh encoder
-		// context (no reference-frame state carried over, same as a new
-		// session), which SendWebSocketBinaryFrame naturally surfaces as a
-		// forced keyframe on this codec's very next EncodeFrame() call.
-		if (!videoEncoder || videoEncoder->Width() != (uint32_t)width || videoEncoder->Height() != (uint32_t)height)
-		{
-			videoEncoder = std::make_unique<SoftwareVideoEncoder>(
-				videoMode == "h264" ? VideoCodec::H264 : VideoCodec::H265, (uint32_t)width, (uint32_t)height, encoderFps);
-		}
+		videoEncoder = std::make_unique<SoftwareVideoEncoder>(
+			videoMode == "h264" ? VideoCodec::H264 : VideoCodec::H265, (uint32_t)width, (uint32_t)height, encoderFps);
 	}
 
-	if ((videoMode == "h264" || videoMode == "h265") && videoEncoder && videoEncoder->IsValid())
+	if (!videoEncoder->IsValid())
+		return true; // Real encoder-open failure -- skip this frame rather than kill the session over it.
+
+	std::vector<uint8_t> nals;
+	// Temporary diagnostic timing (see the "verzögert nach dem Intro"
+	// investigation) -- logs only when either half takes long enough to
+	// plausibly explain visible lag, so this doesn't spam the log on
+	// the common fast case. Encode is CPU-bound (competes with Cemu's
+	// own emulation for the same cores); send is bound by the actual
+	// Wi-Fi link. Remove once the bottleneck is confirmed.
+	const auto encodeStart = std::chrono::steady_clock::now();
+	const bool encodeOk = videoEncoder->EncodeFrame(rgba8.data(), nals);
+	const auto encodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - encodeStart).count();
+	if (!encodeOk)
+		return true; // Real encoder error -- skip this frame rather than kill the session over it.
+	if (nals.empty())
 	{
-		std::vector<uint8_t> nals;
-		// Temporary diagnostic timing (see the "verzögert nach dem Intro"
-		// investigation) -- logs only when either half takes long enough to
-		// plausibly explain visible lag, so this doesn't spam the log on
-		// the common fast case. Encode is CPU-bound (competes with Cemu's
-		// own emulation for the same cores); send is bound by the actual
-		// Wi-Fi link. Remove once the bottleneck is confirmed.
-		const auto encodeStart = std::chrono::steady_clock::now();
-		const bool encodeOk = videoEncoder->EncodeFrame(rgba8.data(), nals);
-		const auto encodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now() - encodeStart).count();
-		if (!encodeOk)
-			return true; // Real encoder error -- skip this frame rather than kill the session over it.
-		if (nals.empty())
-		{
-			if (encodeMs > 20)
-				cemuLog_log(LogType::Force, fmt::format("Unison {} encode took {}ms (no output yet)", videoMode, encodeMs));
-			return true; // Encoder produced no output yet (internal buffering) -- nothing to send.
-		}
-
-		// Coded (padded, macroblock/CTU-aligned) dimensions, not the raw
-		// display width/height -- see SoftwareVideoEncoder::CodedWidth()'s
-		// own comment: the bitstream is encoded at this size, and at least
-		// one real hardware decoder has been observed to distort the
-		// picture if told to crop a non-macroblock-aligned SPS conformance
-		// window, so nothing ever asks a decoder to crop here at all.
-		std::vector<uint8_t> message;
-		message.reserve(10 + nals.size());
-		message.push_back((uint8_t)UNISON_MSG_VIDEO);
-		AppendU32LE(message, videoEncoder->CodedWidth());
-		AppendU32LE(message, videoEncoder->CodedHeight());
-		message.push_back(videoMode == "h264" ? UNISON_VIDEO_FORMAT_H264 : UNISON_VIDEO_FORMAT_H265);
-		message.insert(message.end(), nals.begin(), nals.end());
-
-		const auto sendStart = std::chrono::steady_clock::now();
-		const bool sendOk = SendWebSocketBinaryFrame(fd, message, stop);
-		const auto sendMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now() - sendStart).count();
-		if (encodeMs > 20 || sendMs > 20)
-			cemuLog_log(LogType::Force, fmt::format("Unison {} frame: {} bytes, encode {}ms, send {}ms", videoMode, nals.size(), encodeMs, sendMs));
-		return sendOk;
+		if (encodeMs > 20)
+			cemuLog_log(LogType::Force, fmt::format("Unison {} encode took {}ms (no output yet)", videoMode, encodeMs));
+		return true; // Encoder produced no output yet (internal buffering) -- nothing to send.
 	}
 
-	std::vector<uint8_t> rgb565;
-	ConvertRgba8ToRgb565(rgba8.data(), width, height, rgb565);
-
-	if (videoMode == "legacy")
-	{
-		std::vector<uint8_t> compressed(unison_deflate_max_size(rgb565.size()));
-		size_t compressedSize = 0;
-		if (unison_deflate_raw(rgb565.data(), rgb565.size(), compressed.data(), compressed.size(), &compressedSize) != UNISON_DEFLATE_OK)
-			return true; // compressed is sized correctly above, so this shouldn't happen -- skip this frame rather than kill the session over it.
-
-		std::vector<uint8_t> message;
-		message.reserve(10 + compressedSize);
-		message.push_back((uint8_t)UNISON_MSG_VIDEO);
-		AppendU32LE(message, (uint32_t)width);
-		AppendU32LE(message, (uint32_t)height);
-		message.push_back(0); // format=0: full frame, no INDEXED/TILES bits set.
-		message.insert(message.end(), compressed.begin(), compressed.begin() + compressedSize);
-		return SendWebSocketBinaryFrame(fd, message, stop);
-	}
-
-	// Guards against a stale previous-frame buffer from a different
-	// resolution (not expected for this fixed-854x480 stream type, but
-	// mismatched sizes would otherwise be undefined behavior for the tile
-	// diff below) -- treat it the same as "no previous frame yet".
-	if (lastSentRgb565.size() != rgb565.size())
-		lastSentRgb565.clear();
-
-	std::vector<uint8_t> scratch(unison_video_encode_scratch_size((uint32_t)width, (uint32_t)height));
-	std::vector<uint8_t> compressed(unison_video_encode_max_size((uint32_t)width, (uint32_t)height));
-	size_t compressedSize = 0;
-	uint8_t format = 0;
-
-	const uint8_t* previous = lastSentRgb565.empty() ? nullptr : lastSentRgb565.data();
-	unison_encode_status status = unison_encode_video_frame(
-		rgb565.data(), previous, (uint32_t)width, (uint32_t)height, scratch.data(), scratch.size(),
-		compressed.data(), compressed.size(), &compressedSize, &format);
-
-	if (status == UNISON_ENCODE_UNCHANGED)
-		return true; // Pixel-identical to the last frame actually sent -- nothing to do.
-	if (status != UNISON_ENCODE_OK)
-		return true; // scratch/compressed are sized correctly above, so this shouldn't happen -- skip this frame rather than kill the session over it.
-
+	// Coded (padded, macroblock/CTU-aligned) dimensions, not the raw
+	// display width/height -- see SoftwareVideoEncoder::CodedWidth()'s
+	// own comment: the bitstream is encoded at this size, and at least
+	// one real hardware decoder has been observed to distort the
+	// picture if told to crop a non-macroblock-aligned SPS conformance
+	// window, so nothing ever asks a decoder to crop here at all.
 	std::vector<uint8_t> message;
-	message.reserve(10 + compressedSize);
+	message.reserve(10 + nals.size());
 	message.push_back((uint8_t)UNISON_MSG_VIDEO);
-	AppendU32LE(message, (uint32_t)width);
-	AppendU32LE(message, (uint32_t)height);
-	message.push_back(format);
-	message.insert(message.end(), compressed.begin(), compressed.begin() + compressedSize);
+	AppendU32LE(message, videoEncoder->CodedWidth());
+	AppendU32LE(message, videoEncoder->CodedHeight());
+	message.push_back(videoMode == "h264" ? UNISON_VIDEO_FORMAT_H264 : UNISON_VIDEO_FORMAT_H265);
+	message.insert(message.end(), nals.begin(), nals.end());
 
-	if (!SendWebSocketBinaryFrame(fd, message, stop))
-		return false;
-
-	lastSentRgb565 = std::move(rgb565);
-	return true;
+	const auto sendStart = std::chrono::steady_clock::now();
+	const bool sendOk = SendWebSocketBinaryFrame(fd, message, stop);
+	const auto sendMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - sendStart).count();
+	if (encodeMs > 20 || sendMs > 20)
+		cemuLog_log(LogType::Force, fmt::format("Unison {} frame: {} bytes, encode {}ms, send {}ms", videoMode, nals.size(), encodeMs, sendMs));
+	return sendOk;
 }
 
 }
@@ -431,14 +346,23 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 		return;
 	}
 
-	if (!SendWebSocketTextFrame(fd, BuildSessionReadyMessage(ack->videoMode), m_stop))
+	// No raw (TILES/legacy) fallback anymore for this stream type -- see
+	// SendVideoFrame()'s own comment on why both were removed entirely.
+	// Anything other than an explicit "h265" request gets h264, the same
+	// "always a real codec" default every client's own video-mode picker
+	// for WIIU_GAMEPAD now enforces (their raw options simply aren't
+	// offered there any more) -- this normalizes the case of an old/
+	// unaware client that still asks for "legacy"/"tiles"/nothing at all.
+	const std::string videoMode = (ack->videoMode == "h265") ? "h265" : "h264";
+
+	if (!SendWebSocketTextFrame(fd, BuildSessionReadyMessage(videoMode), m_stop))
 	{
 		m_active = false;
 		closesocket(fd);
 		return;
 	}
 
-	RunSession(fd, ack->videoMode);
+	RunSession(fd, videoMode);
 
 	m_streaming = false;
 	m_inputActive = false;
@@ -460,15 +384,9 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 	m_streaming = true;
 	m_inputActive = true;
 	uint64_t lastSentFrameId = 0;
-	// TILES-diff/dedup state for SendVideoFrame() -- session-local (not a
-	// member), same reasoning as the mic-enable edge-detection below: reset
-	// to empty (meaning "no previous frame", forcing a fresh keyframe) at
-	// the start of every new session rather than persisting across
-	// reconnects.
-	std::vector<uint8_t> lastSentFrameRgb565;
-	// Session-local H.264/H265 encoder (only ever used for those two modes)
-	// -- fresh per session, same reasoning as lastSentFrameRgb565 above:
-	// encoder/decoder reference-frame state must never cross sessions.
+	// Session-local H.264/H265 encoder -- fresh per session, same reasoning
+	// as lastSentMicWanted below: encoder/decoder reference-frame state
+	// must never cross sessions.
 	// Left null here (rather than eagerly constructed against the fixed
 	// kStreamWidth/kStreamHeight, as this used to do) -- SendVideoFrame()
 	// now (re)builds it lazily, against whichever real per-frame width/
@@ -507,7 +425,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const std::string& videoMode)
 		}
 		if (!frameCopy.empty())
 		{
-			if (!SendVideoFrame(fd, frameCopy, width, height, lastSentFrameRgb565, videoMode, videoEncoder, encoderFps, m_stop))
+			if (!SendVideoFrame(fd, frameCopy, width, height, videoMode, videoEncoder, encoderFps, m_stop))
 				return;
 			lastSentFrameId = currentId;
 		}
