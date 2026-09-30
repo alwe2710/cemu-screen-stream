@@ -20,7 +20,6 @@ const char* ErrorCodeToString(HandshakeErrorCode code)
 	case HandshakeErrorCode::VersionMismatch: return "version_mismatch";
 	case HandshakeErrorCode::SlotUnavailable: return "slot_unavailable";
 	case HandshakeErrorCode::MalformedRequest: return "malformed_request";
-	case HandshakeErrorCode::UdpVideoRequired: return "udp_video_required";
 	}
 	return "malformed_request";
 }
@@ -130,7 +129,7 @@ std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload)
 	return ack;
 }
 
-std::string BuildSessionReadyMessage(const std::string& videoMode, uint16_t videoPort)
+std::string BuildSessionReadyMessage(const std::string& videoMode, std::optional<uint16_t> videoPort)
 {
 	// No real video/audio negotiation for this stream type: fixed 854x480
 	// and 48kHz/stereo, no redirect (single slot) -- same simplification as
@@ -161,14 +160,16 @@ std::string BuildSessionReadyMessage(const std::string& videoMode, uint16_t vide
 		<< "\"fps\":" << kStreamFps
 		<< "},"
 		<< "\"audio\":{\"sample_rate\":48000,\"channels\":2},"
-		<< "\"video_mode\":\"" << videoMode << "\","
-		// Dedicated video connection (docs/protocol.md, "Dedicated video
-		// connection", protocol_version 3) -- WiiuGamepadStream::ServeConnection()
-		// already has a second listener bound and waiting by the time this
-		// message goes out (see its own comment), so this is always a real,
-		// already-listening port, not a placeholder.
-		<< "\"video_port\":" << videoPort
-		<< "}";
+		<< "\"video_mode\":\"" << videoMode << "\"";
+	// Dedicated video/audio channel (docs/protocol.md, "Dedicated video/
+	// audio channel (UDP)", protocol_version 4) -- omitted entirely for a
+	// client that set hello_ack.no_udp_video (WiiuGamepadStream::
+	// ServeConnection() then never bothers waiting for a UNISON_MSG_UDP_HELLO
+	// rendezvous either); present, and always a real already-listening port
+	// by the time this goes out, for every other client.
+	if (videoPort)
+		out << ",\"video_port\":" << *videoPort;
+	out << "}";
 	return out.str();
 }
 

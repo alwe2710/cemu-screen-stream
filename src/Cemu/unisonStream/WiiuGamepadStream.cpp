@@ -113,8 +113,16 @@ bool SendFragmented(SOCKET udpFd, const sockaddr_in& dest, const std::vector<uin
 // sample layout/rate is entirely up to each emulator's own audio pipeline
 // (see unison/protocol.h's unison_audio_frame: type=3, sample_rate u32le,
 // channels u8, then raw s16le samples, no further structure).
-bool SendAudioFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
-                     const std::vector<int16_t>& samples, uint32_t sampleRate, uint8_t channels)
+// tcpFd/stop are only used when tcpFallback is true (this session's client
+// set hello_ack.no_udp_video, docs/protocol.md's "Opting out" -- no dedicated
+// UDP destination exists for it at all, ServeConnection never even waits for
+// a UNISON_MSG_UDP_HELLO in that case); udpFd/dest/frameId are only used
+// otherwise. Both are always passed since callers (RunSession) don't
+// themselves know which fields are live -- cheap enough not to bother
+// splitting into two call sites.
+bool SendAudioFrame(bool tcpFallback, SOCKET tcpFd, const std::atomic_bool& stop, SOCKET udpFd,
+                     const sockaddr_in& dest, uint32_t frameId, const std::vector<int16_t>& samples,
+                     uint32_t sampleRate, uint8_t channels)
 {
 	std::vector<uint8_t> message;
 	message.reserve(6 + samples.size() * sizeof(int16_t));
@@ -124,7 +132,8 @@ bool SendAudioFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
 	for (int16_t sample : samples)
 		AppendS16LE(message, sample);
 
-	return SendFragmented(udpFd, dest, message, UNISON_MSG_AUDIO, frameId);
+	return tcpFallback ? SendWebSocketBinaryFrame(tcpFd, message, stop)
+	                    : SendFragmented(udpFd, dest, message, UNISON_MSG_AUDIO, frameId);
 }
 
 // Returns false only on a real socket error (caller should treat the
@@ -161,7 +170,8 @@ bool SendAudioFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
 // happens to match 854x480). Fixed by (re)constructing videoEncoder
 // in-place whenever this frame's width/height don't match its current
 // Width()/Height(), same as a resolution change on a first connect.
-bool SendVideoFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
+bool SendVideoFrame(bool tcpFallback, SOCKET tcpFd, const std::atomic_bool& stop, SOCKET udpFd,
+                    const sockaddr_in& dest, uint32_t frameId,
                     const std::vector<uint8_t>& rgba8, int width, int height,
                     const std::string& videoMode,
                     std::unique_ptr<SoftwareVideoEncoder>& videoEncoder, uint32_t encoderFps,
@@ -225,7 +235,8 @@ bool SendVideoFrame(SOCKET udpFd, const sockaddr_in& dest, uint32_t frameId,
 	message.insert(message.end(), nals.begin(), nals.end());
 
 	const auto sendStart = std::chrono::steady_clock::now();
-	const bool sendOk = SendFragmented(udpFd, dest, message, UNISON_MSG_VIDEO, frameId);
+	const bool sendOk = tcpFallback ? SendWebSocketBinaryFrame(tcpFd, message, stop)
+	                                : SendFragmented(udpFd, dest, message, UNISON_MSG_VIDEO, frameId);
 	const auto sendMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::steady_clock::now() - sendStart).count();
 	if (encodeMs > 20 || sendMs > 20)
@@ -427,25 +438,14 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	}
 
 	// Opt-out from the dedicated UDP channel (docs/protocol.md, "Dedicated
-	// video/audio channel (UDP)") -- clients/web is the one real client
-	// that ever sets this (no raw socket API in a browser at all). This
-	// stream type has no TCP fallback left to offer such a client instead
-	// -- see SendVideoFrame()'s own comment on why the old raw/tiled TCP
-	// path was removed outright, not kept alongside the new channel -- so
-	// a client that can't use UDP genuinely cannot stream WIIU_GAMEPAD
-	// video at all right now; reject clearly rather than connect it to a
-	// session that will never show a frame.
-	if (ack->noUdpVideo)
-	{
-		SendWebSocketTextFrame(fd, BuildHandshakeErrorMessage(HandshakeErrorCode::UdpVideoRequired,
-		                                                        "Dieser Client kann keine UDP-Verbindung "
-		                                                        "aufbauen, WIIU_GAMEPAD bietet aber "
-		                                                        "keinen TCP-Fallback mehr an"),
-		                        m_stop);
-		m_active = false;
-		closesocket(fd);
-		return;
-	}
+	// video/audio channel (UDP)" -> "Opting out") -- clients/web is the one
+	// real client that ever sets this (no raw socket API in a browser at
+	// all). Video/Audio then stay multiplexed on this same WebSocket
+	// connection instead, the same wire format this stream type used
+	// before protocol_version 4 -- session_ready omits video_port entirely
+	// (BuildSessionReadyMessage) and WaitForVideoHello is skipped below,
+	// since there's no dedicated UDP destination to learn.
+	const bool tcpFallback = ack->noUdpVideo;
 
 	// No raw (TILES/legacy) fallback anymore for this stream type -- see
 	// SendVideoFrame()'s own comment on why both were removed entirely.
@@ -455,7 +455,8 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 	// offered there any more) -- this normalizes the case of an old/
 	// unaware client that still asks for "legacy"/"tiles"/nothing at all.
 	const std::string videoMode = (ack->videoMode == "h265") ? "h265" : "h264";
-	const uint16_t videoPort = (uint16_t)(m_port + kVideoPortOffset);
+	const std::optional<uint16_t> videoPort =
+		tcpFallback ? std::nullopt : std::optional<uint16_t>((uint16_t)(m_port + kVideoPortOffset));
 
 	if (!SendWebSocketTextFrame(fd, BuildSessionReadyMessage(videoMode, videoPort), m_stop))
 	{
@@ -464,24 +465,27 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 		return;
 	}
 
-	// Dedicated video/audio channel (docs/protocol.md, protocol_version 4):
-	// the client is expected to send a UNISON_MSG_UDP_HELLO rendezvous
-	// datagram to videoPort right after receiving session_ready above --
-	// wait for it here, bounded, before ever entering RunSession(), so
-	// that function never has to handle "no client address yet" itself. A
-	// client this version always attempts this (exact-match
-	// protocol_version already ensures it speaks 4, see docs/protocol.md's
-	// "Protocol Version") -- a timeout here means a genuine connectivity
-	// problem, treated as a handshake failure the same as any other.
 	sockaddr_in videoAddr{};
-	if (!WaitForVideoHello(std::chrono::seconds(5), &videoAddr))
+	if (!tcpFallback)
 	{
-		m_active = false;
-		closesocket(fd);
-		return;
+		// Dedicated video/audio channel (docs/protocol.md, protocol_version 4):
+		// the client is expected to send a UNISON_MSG_UDP_HELLO rendezvous
+		// datagram to videoPort right after receiving session_ready above --
+		// wait for it here, bounded, before ever entering RunSession(), so
+		// that function never has to handle "no client address yet" itself. A
+		// client this version always attempts this (exact-match
+		// protocol_version already ensures it speaks 4, see docs/protocol.md's
+		// "Protocol Version") -- a timeout here means a genuine connectivity
+		// problem, treated as a handshake failure the same as any other.
+		if (!WaitForVideoHello(std::chrono::seconds(5), &videoAddr))
+		{
+			m_active = false;
+			closesocket(fd);
+			return;
+		}
 	}
 
-	RunSession(fd, videoAddr, videoMode);
+	RunSession(fd, tcpFallback, videoAddr, videoMode);
 
 	m_streaming = false;
 	m_inputActive = false;
@@ -545,7 +549,7 @@ bool WiiuGamepadStream::WaitForVideoHello(std::chrono::milliseconds timeout, soc
 	return false; // Timed out.
 }
 
-void WiiuGamepadStream::RunSession(SOCKET fd, const sockaddr_in& videoAddr, const std::string& videoMode)
+void WiiuGamepadStream::RunSession(SOCKET fd, bool tcpFallback, const sockaddr_in& videoAddr, const std::string& videoMode)
 {
 	m_streaming = true;
 	m_inputActive = true;
@@ -603,8 +607,8 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const sockaddr_in& videoAddr, cons
 		}
 		if (!frameCopy.empty())
 		{
-			if (!SendVideoFrame(m_videoListenSocket, videoAddr, videoFrameIdCounter, frameCopy, width,
-			                    height, videoMode, videoEncoder, encoderFps, bitrateKbps))
+			if (!SendVideoFrame(tcpFallback, fd, m_stop, m_videoListenSocket, videoAddr, videoFrameIdCounter,
+			                    frameCopy, width, height, videoMode, videoEncoder, encoderFps, bitrateKbps))
 				return;
 			videoFrameIdCounter++;
 			lastSentFrameId = currentId;
@@ -626,8 +630,8 @@ void WiiuGamepadStream::RunSession(SOCKET fd, const sockaddr_in& videoAddr, cons
 			}
 			if (!audioSamples.empty())
 			{
-				if (!SendAudioFrame(m_videoListenSocket, videoAddr, audioFrameIdCounter, audioSamples,
-				                    audioSampleRate, audioChannels))
+				if (!SendAudioFrame(tcpFallback, fd, m_stop, m_videoListenSocket, videoAddr, audioFrameIdCounter,
+				                    audioSamples, audioSampleRate, audioChannels))
 					return;
 				audioFrameIdCounter++;
 			}

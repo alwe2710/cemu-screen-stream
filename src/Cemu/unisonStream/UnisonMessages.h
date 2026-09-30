@@ -68,11 +68,6 @@ enum class HandshakeErrorCode
 	VersionMismatch,
 	SlotUnavailable,
 	MalformedRequest,
-	// Client set hello_ack.no_udp_video, but this server has no TCP
-	// fallback for Video/Audio left to offer instead (removed when this
-	// stream type moved to the dedicated UDP channel, protocol_version 4)
-	// -- see ServeConnection()'s own comment on this check.
-	UdpVideoRequired,
 };
 
 std::string BuildHelloMessage();
@@ -82,7 +77,12 @@ std::string BuildHelloMessage();
 // HandshakeErrorCode::MalformedRequest.
 std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload);
 
-std::string BuildSessionReadyMessage(const std::string& videoMode, uint16_t videoPort);
+// videoPort is nullopt for a client that set hello_ack.no_udp_video --
+// Video/Audio then stay multiplexed on this same WebSocket connection
+// instead (WiiuGamepadStream::RunSession's tcpFallback path), the same
+// wire format this stream type used before protocol_version 4 (docs/
+// protocol.md, "Dedicated video/audio channel (UDP)" -> "Opting out").
+std::string BuildSessionReadyMessage(const std::string& videoMode, std::optional<uint16_t> videoPort);
 
 std::string BuildHandshakeErrorMessage(HandshakeErrorCode code, const std::string& detail);
 

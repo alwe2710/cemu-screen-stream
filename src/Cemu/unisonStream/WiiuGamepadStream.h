@@ -132,14 +132,20 @@ public:
 private:
 	void AcceptLoop();
 	void ServeConnection(SOCKET fd);
-	void RunSession(SOCKET fd, const sockaddr_in& videoAddr, const std::string& videoMode);
+	// tcpFallback: this session's client set hello_ack.no_udp_video --
+	// videoAddr is unused (never looked at) in that case, Video/Audio are
+	// sent as ordinary WebSocket binary frames on fd itself instead of via
+	// m_videoListenSocket, matching the pre-protocol_version-4 wire format
+	// (docs/protocol.md, "Opting out (hello_ack.no_udp_video)").
+	void RunSession(SOCKET fd, bool tcpFallback, const sockaddr_in& videoAddr, const std::string& videoMode);
 	// Waits (bounded) on m_videoListenSocket for the client's
 	// UNISON_MSG_UDP_HELLO rendezvous datagram -- called from
 	// ServeConnection() right after session_ready (with video_port) goes
 	// out, so RunSession() always starts already knowing where to send
 	// Video/Audio rather than having to handle "no client address yet"
 	// itself. Returns false on timeout/error; *outAddr is only meaningful
-	// when this returns true.
+	// when this returns true. Never called at all for a tcpFallback session
+	// (ServeConnection skips straight to RunSession).
 	[[nodiscard]] bool WaitForVideoHello(std::chrono::milliseconds timeout, sockaddr_in* outAddr);
 
 	const uint16_t m_port;
