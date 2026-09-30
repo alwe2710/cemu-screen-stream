@@ -37,6 +37,7 @@
 // below under a mutex, never calls into game/console state directly.
 
 #include "Common/socket.h"
+#include "UnisonMessages.h"
 
 #include <unison/protocol.h>
 
@@ -172,9 +173,19 @@ private:
 	std::atomic_bool m_active{false};
 
 	// Minimum interval between GPU readbacks -- see this file's own comment
-	// on OnDrcFrame() being a real render-thread stall. 50ms caps the
-	// capture rate at 20fps regardless of the game's actual frame rate.
-	static constexpr std::chrono::milliseconds kMinCaptureInterval{50};
+	// on OnDrcFrame() being a real render-thread stall. Derived from
+	// kStreamFps (UnisonMessages.h) -- the GamePad's own native 60Hz output
+	// rate -- rather than an independently-picked throttle: this used to be
+	// a much more conservative 50ms/20fps cap (latency investigation: with
+	// captures live-confirmed to consistently cost well under 10ms each
+	// -- see OnDrcFrame's own >10ms diagnostic, which never fired in a real
+	// test session -- there was no GPU-stall reason to stay below the
+	// pad's real rate, and running below it just adds up to one whole
+	// capture-interval's worth of extra "stale" latency per frame on top
+	// of whatever the decoder itself adds (see jni_bridge.c's own
+	// reassembly-to-render diagnostic).
+	static constexpr std::chrono::milliseconds kMinCaptureInterval{
+		(int64_t)(1000.0 / Cemu::UnisonStream::kStreamFps)};
 	std::chrono::steady_clock::time_point m_lastCaptureTime{};
 
 	std::mutex m_frameMutex;
@@ -182,6 +193,12 @@ private:
 	int m_latestFrameWidth = 0;
 	int m_latestFrameHeight = 0;
 	uint64_t m_frameId = 0;
+	// When CaptureStreamFrame() returned this particular frame's pixel data
+	// (not when OnDrcFrame was entered) -- the honest "this frame's content
+	// became real" timestamp, read back out in RunSession() to measure
+	// queueWaitMs (docs: latency investigation, see SendVideoFrame's own
+	// comment on the full capture-to-sent breakdown this feeds).
+	std::chrono::steady_clock::time_point m_latestFrameCapturedAt{};
 
 	std::atomic_bool m_streaming{false}; // session_ready sent, input override live
 	std::atomic_bool m_inputActive{false};

@@ -175,7 +175,7 @@ bool SendVideoFrame(bool tcpFallback, SOCKET tcpFd, const std::atomic_bool& stop
                     const std::vector<uint8_t>& rgba8, int width, int height,
                     const std::string& videoMode,
                     std::unique_ptr<SoftwareVideoEncoder>& videoEncoder, uint32_t encoderFps,
-                    uint32_t bitrateKbps)
+                    uint32_t bitrateKbps, int64_t queueWaitMs)
 {
 	// (Re)build whenever there's no encoder yet (first frame this session)
 	// or this frame's real captured size no longer matches what the
@@ -201,12 +201,20 @@ bool SendVideoFrame(bool tcpFallback, SOCKET tcpFd, const std::atomic_bool& stop
 		return true; // Real encoder-open failure -- skip this frame rather than kill the session over it.
 
 	std::vector<uint8_t> nals;
-	// Temporary diagnostic timing (see the "verzögert nach dem Intro"
-	// investigation) -- logs only when either half takes long enough to
-	// plausibly explain visible lag, so this doesn't spam the log on
-	// the common fast case. Encode is CPU-bound (competes with Cemu's
-	// own emulation for the same cores); send is bound by the actual
-	// Wi-Fi link. Remove once the bottleneck is confirmed.
+	// Temporary diagnostic timing (latency investigation: "still feels
+	// delayed even after cutting the bitrate way down" -- a user-visible
+	// symptom that, if true, points somewhere other than send time, which
+	// is the one thing a lower bitrate actually shrinks). Full breakdown,
+	// not just this function's own two stages: queueWaitMs (how long this
+	// frame's pixel data already sat captured before this call even
+	// started, computed by RunSession's caller from OnDrcFrame's own
+	// capture timestamp) + captureMs (OnDrcFrame's own diagnostic, logged
+	// separately there, the GPU readback itself) + encodeMs + sendMs is
+	// the complete capture-to-wire path. Logged unconditionally but rate-
+	// limited (not just above an ad-hoc threshold, which would hide a
+	// bottleneck that's merely *consistently* elevated rather than an
+	// occasional spike) so an active session's log doesn't get flooded.
+	// Remove this whole diagnostic once the bottleneck is confirmed.
 	const auto encodeStart = std::chrono::steady_clock::now();
 	const bool encodeOk = videoEncoder->EncodeFrame(rgba8.data(), nals);
 	const auto encodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -215,8 +223,13 @@ bool SendVideoFrame(bool tcpFallback, SOCKET tcpFd, const std::atomic_bool& stop
 		return true; // Real encoder error -- skip this frame rather than kill the session over it.
 	if (nals.empty())
 	{
-		if (encodeMs > 20)
-			cemuLog_log(LogType::Force, fmt::format("Unison {} encode took {}ms (no output yet)", videoMode, encodeMs));
+		static std::chrono::steady_clock::time_point s_lastNoOutputDiagLog{};
+		const auto nowDiag = std::chrono::steady_clock::now();
+		if (nowDiag - s_lastNoOutputDiagLog > std::chrono::seconds(1))
+		{
+			s_lastNoOutputDiagLog = nowDiag;
+			cemuLog_log(LogType::Force, fmt::format("Unison {} queue {}ms, encode {}ms (no output yet)", videoMode, queueWaitMs, encodeMs));
+		}
 		return true; // Encoder produced no output yet (internal buffering) -- nothing to send.
 	}
 
@@ -239,8 +252,16 @@ bool SendVideoFrame(bool tcpFallback, SOCKET tcpFd, const std::atomic_bool& stop
 	                                : SendFragmented(udpFd, dest, message, UNISON_MSG_VIDEO, frameId);
 	const auto sendMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::steady_clock::now() - sendStart).count();
-	if (encodeMs > 20 || sendMs > 20)
-		cemuLog_log(LogType::Force, fmt::format("Unison {} frame: {} bytes, encode {}ms, send {}ms", videoMode, nals.size(), encodeMs, sendMs));
+	static std::chrono::steady_clock::time_point s_lastFrameDiagLog{};
+	const auto nowDiag = std::chrono::steady_clock::now();
+	if (nowDiag - s_lastFrameDiagLog > std::chrono::seconds(1))
+	{
+		s_lastFrameDiagLog = nowDiag;
+		const auto totalMs = queueWaitMs + encodeMs + sendMs;
+		cemuLog_log(LogType::Force, fmt::format(
+			"Unison {} frame: {} bytes, queue {}ms, encode {}ms, send {}ms, total {}ms",
+			videoMode, nals.size(), queueWaitMs, encodeMs, sendMs, totalMs));
+	}
 	return sendOk;
 }
 
@@ -299,17 +320,37 @@ void WiiuGamepadStream::OnDrcFrame(LatteTextureView* texView)
 	if (now - m_lastCaptureTime < kMinCaptureInterval)
 		return;
 
+	// Temporary diagnostic timing (latency investigation: "still feels
+	// delayed even after cutting the bitrate way down" -- see
+	// SendVideoFrame's own comment for the rest of this same breakdown).
+	// CaptureStreamFrame() is a real render-thread stall (GPU readback,
+	// this file's own kMinCaptureInterval comment) -- on the hot path
+	// itself, so this only logs, rate-limited, when it's slow enough to
+	// plausibly matter, never unconditionally every frame.
+	const auto captureStart = now;
 	std::vector<uint8_t> rgba;
 	int width = 0, height = 0;
 	if (!g_renderer->CaptureStreamFrame(texView, rgba, width, height))
 		return;
+	const auto capturedAt = std::chrono::steady_clock::now();
+	const auto captureMs = std::chrono::duration_cast<std::chrono::milliseconds>(capturedAt - captureStart).count();
 	m_lastCaptureTime = now;
 
-	std::lock_guard lock(m_frameMutex);
-	m_latestFrameRgba = std::move(rgba);
-	m_latestFrameWidth = width;
-	m_latestFrameHeight = height;
-	m_frameId++;
+	{
+		std::lock_guard lock(m_frameMutex);
+		m_latestFrameRgba = std::move(rgba);
+		m_latestFrameWidth = width;
+		m_latestFrameHeight = height;
+		m_latestFrameCapturedAt = capturedAt;
+		m_frameId++;
+	}
+
+	static std::chrono::steady_clock::time_point s_lastCaptureDiagLog{};
+	if (captureMs > 10 && capturedAt - s_lastCaptureDiagLog > std::chrono::seconds(1))
+	{
+		s_lastCaptureDiagLog = capturedAt;
+		cemuLog_log(LogType::Force, fmt::format("Unison capture (GPU readback) took {}ms", captureMs));
+	}
 }
 
 std::optional<unison_extended_input> WiiuGamepadStream::GetInputOverride() const
@@ -595,6 +636,7 @@ void WiiuGamepadStream::RunSession(SOCKET fd, bool tcpFallback, const sockaddr_i
 		std::vector<uint8_t> frameCopy;
 		int width = 0, height = 0;
 		uint64_t currentId = 0;
+		std::chrono::steady_clock::time_point capturedAt{};
 		{
 			std::lock_guard lock(m_frameMutex);
 			currentId = m_frameId;
@@ -603,12 +645,22 @@ void WiiuGamepadStream::RunSession(SOCKET fd, bool tcpFallback, const sockaddr_i
 				frameCopy = m_latestFrameRgba;
 				width = m_latestFrameWidth;
 				height = m_latestFrameHeight;
+				capturedAt = m_latestFrameCapturedAt;
 			}
 		}
 		if (!frameCopy.empty())
 		{
+			// queueWaitMs: how long this frame's already-captured pixel data
+			// sat here before this loop iteration even got to it -- see
+			// SendVideoFrame's own comment for why this is measured at all
+			// (latency investigation). Computed here, not inside
+			// SendVideoFrame, since capturedAt is this loop's own state, not
+			// something that function otherwise needs.
+			const auto queueWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - capturedAt).count();
 			if (!SendVideoFrame(tcpFallback, fd, m_stop, m_videoListenSocket, videoAddr, videoFrameIdCounter,
-			                    frameCopy, width, height, videoMode, videoEncoder, encoderFps, bitrateKbps))
+			                    frameCopy, width, height, videoMode, videoEncoder, encoderFps, bitrateKbps,
+			                    queueWaitMs))
 				return;
 			videoFrameIdCounter++;
 			lastSentFrameId = currentId;
