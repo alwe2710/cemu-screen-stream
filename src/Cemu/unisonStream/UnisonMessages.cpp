@@ -20,6 +20,7 @@ const char* ErrorCodeToString(HandshakeErrorCode code)
 	case HandshakeErrorCode::VersionMismatch: return "version_mismatch";
 	case HandshakeErrorCode::SlotUnavailable: return "slot_unavailable";
 	case HandshakeErrorCode::MalformedRequest: return "malformed_request";
+	case HandshakeErrorCode::UdpVideoRequired: return "udp_video_required";
 	}
 	return "malformed_request";
 }
@@ -125,6 +126,7 @@ std::optional<HandshakeAck> ParseHelloAck(const std::vector<uint8_t>& payload)
 	if (unison_json_get_string(text, unison_json_find_member(text, obj.start, obj.end, "video_mode"), videoMode, sizeof(videoMode)) != (size_t)-1
 		&& (strcmp(videoMode, "legacy") == 0 || strcmp(videoMode, "h264") == 0 || strcmp(videoMode, "h265") == 0))
 		ack.videoMode = videoMode;
+	ack.noUdpVideo = unison_json_get_bool(text, unison_json_find_member(text, obj.start, obj.end, "no_udp_video"));
 	return ack;
 }
 

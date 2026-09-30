@@ -426,6 +426,27 @@ void WiiuGamepadStream::ServeConnection(SOCKET fd)
 		return;
 	}
 
+	// Opt-out from the dedicated UDP channel (docs/protocol.md, "Dedicated
+	// video/audio channel (UDP)") -- clients/web is the one real client
+	// that ever sets this (no raw socket API in a browser at all). This
+	// stream type has no TCP fallback left to offer such a client instead
+	// -- see SendVideoFrame()'s own comment on why the old raw/tiled TCP
+	// path was removed outright, not kept alongside the new channel -- so
+	// a client that can't use UDP genuinely cannot stream WIIU_GAMEPAD
+	// video at all right now; reject clearly rather than connect it to a
+	// session that will never show a frame.
+	if (ack->noUdpVideo)
+	{
+		SendWebSocketTextFrame(fd, BuildHandshakeErrorMessage(HandshakeErrorCode::UdpVideoRequired,
+		                                                        "Dieser Client kann keine UDP-Verbindung "
+		                                                        "aufbauen, WIIU_GAMEPAD bietet aber "
+		                                                        "keinen TCP-Fallback mehr an"),
+		                        m_stop);
+		m_active = false;
+		closesocket(fd);
+		return;
+	}
+
 	// No raw (TILES/legacy) fallback anymore for this stream type -- see
 	// SendVideoFrame()'s own comment on why both were removed entirely.
 	// Anything other than an explicit "h265" request gets h264, the same
